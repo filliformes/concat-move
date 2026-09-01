@@ -30,7 +30,7 @@
         },
         "corpus": {
           "name": "Corpus",
-          "knobs": ["pool_mb", "rescan", "slice_mode", "min_slice_ms", "max_slice_ms", "analyze", "silence_gate"],
+          "knobs": ["pool_mb", "rescan", "slice_mode", "min_slice_ms", "max_slice_ms", "analyze", "silence_gate", "source"],
           "params": ["pool_mb", "rescan", "slice_mode", "min_slice_ms", "max_slice_ms", "analyze", "silence_gate"]
         },
         "map": {
