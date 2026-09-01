@@ -1,0 +1,13 @@
+# Build artifacts
+build/
+dist/
+*.o
+*.so
+*.a
+*.tar.gz
+# Corpus / analysis cache (runtime, device-side)
+cache/
+*.concat_index.bin
+# OS
+.DS_Store
+Thumbs.db
