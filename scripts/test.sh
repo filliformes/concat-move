@@ -7,16 +7,23 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MOVE_HOST="${MOVE_HOST:-move.local}"
 REMOTE_DIR="/data/UserData/concat_test"
 
+# Kernel sources every test links against (exclude concat.c — it's the plugin entry).
+SRCS="/build/src/dsp/analysis.c /build/src/dsp/corpus.c"
+
 docker build -t schwung-concat-builder "$SCRIPT_DIR" >/dev/null
 mkdir -p "$ROOT/dist"
-
-echo "Cross-compiling tests (aarch64)..."
-MSYS_NO_PATHCONV=1 docker run --rm -v "$ROOT:/build" schwung-concat-builder \
-  aarch64-linux-gnu-gcc -O2 -Wall -Wextra -I/build/src/dsp \
-    -o /build/dist/test_analysis \
-    /build/tests/test_analysis.c /build/src/dsp/analysis.c -lm
-
-echo "Running on $MOVE_HOST..."
 ssh "ableton@$MOVE_HOST" "mkdir -p $REMOTE_DIR"
-scp -q "$ROOT/dist/test_analysis" "ableton@$MOVE_HOST:$REMOTE_DIR/"
-ssh "ableton@$MOVE_HOST" "chmod +x $REMOTE_DIR/test_analysis; $REMOTE_DIR/test_analysis; rc=\$?; rm -rf $REMOTE_DIR; exit \$rc"
+
+FAIL=0
+for t in "$ROOT"/tests/test_*.c; do
+  name=$(basename "$t" .c)
+  echo "=== $name ==="
+  MSYS_NO_PATHCONV=1 docker run --rm -v "$ROOT:/build" schwung-concat-builder \
+    aarch64-linux-gnu-gcc -O2 -Wall -Wextra -I/build/src/dsp \
+      -o "/build/dist/$name" "/build/tests/$name.c" $SRCS -lm
+  scp -q "$ROOT/dist/$name" "ableton@$MOVE_HOST:$REMOTE_DIR/"
+  ssh "ableton@$MOVE_HOST" "chmod +x $REMOTE_DIR/$name; $REMOTE_DIR/$name" || FAIL=1
+done
+
+ssh "ableton@$MOVE_HOST" "rm -rf $REMOTE_DIR"
+exit $FAIL
