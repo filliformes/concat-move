@@ -1,0 +1,8 @@
+# Force LF on shell scripts / Dockerfile / C so Docker (Linux) builds don't choke
+# on CRLF authored under Windows.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.c         text eol=lf
+*.h         text eol=lf
+*.json      text eol=lf
+*.yml       text eol=lf

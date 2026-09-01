@@ -141,8 +141,11 @@ clock reaches `on_midi` as len==1 for `follow=Sequence` / tempo-synced `mosaic_r
 
 ---
 
-## Repo map (fill in after scaffolding)
-- `src/dsp/concat.c` (+ `analysis.c`, `corpus.c`, `grain.c` as it grows) — all DSP
+## Repo map (scaffolded v0.1.0 — builds clean, GLIBC 2.17, exports move_plugin_init_v2; render_block = SILENCE stub)
+- `src/dsp/concat.c` (+ `analysis.c`, `corpus.c`, `grain.c`, `kissfft.c` as it grows) — all DSP.
+  DONE: table-driven params (4 pages × 8 knobs), page-aware knob overlay, ui_hierarchy, state
+  (de)serialise, MIDI plumbing, 8-field API. TODO: analyst/loader threads, corpus pool + OOM guard,
+  descriptor pipeline (kissfft + dr_libs), kNN query + repeat-avoid, grain engine, mosaic input.
 - `src/module.json` — version must match git tag
 - `scripts/build.sh` — Docker ARM64 cross-compile (always use this; never ad-hoc aarch64)
 - `scripts/install.sh` — `scp -r dist/concat root@move.local:/data/UserData/schwung/modules/sound_generators/` + fix ownership + `chmod +x dsp.so`
