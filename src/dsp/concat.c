@@ -70,15 +70,16 @@ typedef struct {
     const char **opts;       /* enum options (NULL otherwise) */
     int   nopts;
     float def;
+    const char *unit;        /* popup suffix (NULL = none); matches module.json */
 } pdef_t;
 
 static const pdef_t PARAMS[NPARAMS] = {
     /* Corpus */
-    [P_POOL_MB]       = {"pool_mb",      "Pool Cap",     T_INT,   16, 512, 1,  NULL, 0, 128},
+    [P_POOL_MB]       = {"pool_mb",      "Pool Cap",     T_INT,   16, 512, 1,  NULL, 0, 128, "MB"},
     [P_RESCAN]        = {"rescan",       "Rescan",       T_INT,    0, 127, 1,  NULL, 0, 0},
     [P_SLICE_MODE]    = {"slice_mode",   "Slice Mode",   T_ENUM,   0,   1, 1,  ENV_SLICE_MODE, 2, 0},
-    [P_MIN_SLICE]     = {"min_slice_ms", "Min Slice",    T_FLOAT, 20, 500, 5,  NULL, 0, 60},
-    [P_MAX_SLICE]     = {"max_slice_ms", "Max Slice",    T_FLOAT,100,2000,10,  NULL, 0, 400},
+    [P_MIN_SLICE]     = {"min_slice_ms", "Min Slice",    T_FLOAT, 20, 500, 5,  NULL, 0, 60,  "ms"},
+    [P_MAX_SLICE]     = {"max_slice_ms", "Max Slice",    T_FLOAT,100,2000,10,  NULL, 0, 400, "ms"},
     [P_ANALYZE]       = {"analyze",      "Analyze",      T_INT,    0, 100, 1,  NULL, 0, 0},
     [P_SILENCE_GATE]  = {"silence_gate", "Silence Gate", T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.1f},
     /* Map */
@@ -91,10 +92,10 @@ static const pdef_t PARAMS[NPARAMS] = {
     [P_FOLLOW]        = {"follow",       "Follow",       T_ENUM,   0,   2, 1,  ENV_FOLLOW, 3, 0},
     [P_REPEAT_AVOID]  = {"repeat_avoid", "Repeat Avoid", T_INT,    0,  16, 1,  NULL, 0, 4},
     /* Grain */
-    [P_DENSITY]       = {"density",      "Density",      T_FLOAT,  1, 100, 1,  NULL, 0, 20},
-    [P_GRAIN_SIZE]    = {"grain_size",   "Grain Size",   T_FLOAT, 10, 500, 5,  NULL, 0, 120},
+    [P_DENSITY]       = {"density",      "Density",      T_FLOAT,  1, 100, 1,  NULL, 0, 20,  "g/s"},
+    [P_GRAIN_SIZE]    = {"grain_size",   "Grain Size",   T_FLOAT, 10, 500, 5,  NULL, 0, 120, "ms"},
     [P_GRAIN_ENV]     = {"grain_env",    "Grain Env",    T_ENUM,   0,   2, 1,  ENV_GRAIN, 3, 0},
-    [P_PITCH]         = {"pitch",        "Pitch",        T_FLOAT,-24,  24, 1,  NULL, 0, 0},
+    [P_PITCH]         = {"pitch",        "Pitch",        T_FLOAT,-24,  24, 1,  NULL, 0, 0,   "st"},
     [P_PITCH_JITTER]  = {"pitch_jitter", "Pitch Jitter", T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
     [P_PAN_SPREAD]    = {"pan_spread",   "Pan Spread",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.3f},
     [P_REVERSE]       = {"reverse",      "Reverse",      T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
@@ -238,7 +239,7 @@ static void set_param(void *instance, const char *key, const char *val) {
         int slot = atoi(key + 5) - 1;                 /* 1-indexed → 0-indexed */
         if (slot >= 0 && slot < 8) {
             int idx = PAGE_KNOBS[inst->current_page][slot];
-            if (idx >= 0) {
+            if (idx >= 0 && idx != P_ANALYZE) {  /* analyze = DSP-driven progress, read-only */
                 const pdef_t *p = &PARAMS[idx];
                 float step = (p->type == T_FLOAT) ? p->step : 1.0f;
                 inst->pv[idx] = clampf(inst->pv[idx] + atoi(val) * step, p->min, p->max);
@@ -283,9 +284,12 @@ static void set_param(void *instance, const char *key, const char *val) {
         return;
     }
 
-    /* Named param. */
+    /* Named param. (analyze is DSP-driven progress → ignore external writes.) */
     for (int i = 0; i < NPARAMS; i++)
-        if (strcmp(key, PARAMS[i].key) == 0) { apply_value(inst, i, val); return; }
+        if (strcmp(key, PARAMS[i].key) == 0) {
+            if (i != P_ANALYZE) apply_value(inst, i, val);
+            return;
+        }
 }
 
 /* ── get_param ──────────────────────────────────────────────────────────────── */
@@ -297,10 +301,11 @@ static int fmt_value(const pdef_t *p, float v, char *buf, int buf_len) {
         if (idx >= p->nopts) idx = p->nopts - 1;
         return snprintf(buf, buf_len, "%s", p->opts[idx]);
     }
-    if (p->type == T_INT) return snprintf(buf, buf_len, "%d", (int)lrintf(v));
-    /* float: percent for 0..1 params, else raw with one decimal */
+    if (p->type == T_INT)
+        return snprintf(buf, buf_len, p->unit ? "%d %s" : "%d", (int)lrintf(v), p->unit);
+    /* float: percent for 0..1 params, else integer value + unit */
     if (p->min == 0.0f && p->max == 1.0f) return snprintf(buf, buf_len, "%d%%", (int)(v * 100.0f));
-    return snprintf(buf, buf_len, "%.1f", v);
+    return snprintf(buf, buf_len, p->unit ? "%.0f %s" : "%.1f", v, p->unit);
 }
 
 static int get_param(void *instance, const char *key, char *buf, int buf_len) {
@@ -344,11 +349,13 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
         int n = 0;
         for (int i = 0; i < NPARAMS; i++) {
             if (i == P_RESCAN || i == P_ANALYZE) continue;  /* transient/read-only */
+            if (n >= buf_len) return buf_len - 1;           /* guard: buf full, avoid size_t underflow */
             const pdef_t *p = &PARAMS[i];
             if (p->type == T_FLOAT) n += snprintf(buf + n, buf_len - n, "%s=%.6f\n", p->key, (double)inst->pv[i]);
             else                    n += snprintf(buf + n, buf_len - n, "%s=%d\n",   p->key, (int)lrintf(inst->pv[i]));
         }
-        if (inst->corpus_path[0]) n += snprintf(buf + n, buf_len - n, "corpus_path=%s\n", inst->corpus_path);
+        if (inst->corpus_path[0] && n < buf_len)
+            n += snprintf(buf + n, buf_len - n, "corpus_path=%s\n", inst->corpus_path);
         return n;
     }
 

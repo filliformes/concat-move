@@ -12,7 +12,6 @@
   "min_host_version": "0.9.10",
   "capabilities": {
     "audio_out": true,
-    "audio_in": true,
     "midi_in": true,
     "chainable": true,
     "component_type": "sound_generator",
