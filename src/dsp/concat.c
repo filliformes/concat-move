@@ -50,8 +50,6 @@ enum {
     P_DENSITY, P_GRAIN_SIZE, P_GRAIN_ENV, P_PITCH, P_PITCH_JITTER, P_PAN_SPREAD, P_REVERSE,
     /* Play / Out */
     P_PLAY_MODE, P_INPUT_SRC, P_MOSAIC_RATE, P_NOTE_MATCH, P_DRY_MIX, P_VOLUME, P_WIDTH, P_SAT,
-    /* Corpus source picker (knob 8, Corpus page) — dynamic, scanned at runtime */
-    P_SOURCE,
     NPARAMS
 };
 
@@ -112,13 +110,12 @@ static const pdef_t PARAMS[NPARAMS] = {
     [P_VOLUME]        = {"volume",       "Volume",       T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.8f},
     [P_WIDTH]         = {"width",        "Width",        T_FLOAT,  0,   1, 0.01f, NULL, 0, 1.0f},
     [P_SAT]           = {"sat",          "Saturation",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
-    [P_SOURCE]        = {"source",       "Source",       T_INT,    0, INGEST_MAX_FOLDERS - 1, 1, NULL, 0, 0, NULL},
 };
 
 /* Page → knob-slot → param index (-1 = empty). Order matches ui_hierarchy pages. */
 enum { PG_CORPUS, PG_MAP, PG_GRAIN, PG_PLAY, NPAGES };
 static const int PAGE_KNOBS[NPAGES][8] = {
-    [PG_CORPUS] = {P_POOL_MB, P_RESCAN, P_SLICE_MODE, P_MIN_SLICE, P_MAX_SLICE, P_ANALYZE, P_SILENCE_GATE, P_SOURCE},
+    [PG_CORPUS] = {P_POOL_MB, P_RESCAN, P_SLICE_MODE, P_MIN_SLICE, P_MAX_SLICE, P_ANALYZE, P_SILENCE_GATE, -1},
     [PG_MAP]    = {P_X_DESC, P_Y_DESC, P_X_POS, P_Y_POS, P_RADIUS, P_K_NEAREST, P_FOLLOW, P_REPEAT_AVOID},
     [PG_GRAIN]  = {P_DENSITY, P_GRAIN_SIZE, P_GRAIN_ENV, P_PITCH, P_PITCH_JITTER, P_PAN_SPREAD, P_REVERSE, -1},
     [PG_PLAY]   = {P_PLAY_MODE, P_INPUT_SRC, P_MOSAIC_RATE, P_NOTE_MATCH, P_DRY_MIX, P_VOLUME, P_WIDTH, P_SAT},
@@ -132,7 +129,7 @@ static const char UI_HIERARCHY[] =
   "{\"level\":\"map\",\"label\":\"Map\"},"
   "{\"level\":\"grain\",\"label\":\"Grain\"},"
   "{\"level\":\"play\",\"label\":\"Play / Out\"}]},"
-"\"corpus\":{\"name\":\"Corpus\",\"knobs\":[\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\",\"source\"],\"params\":[\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"]},"
+"\"corpus\":{\"name\":\"Corpus\",\"knobs\":[\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"],\"params\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"]},"
 "\"map\":{\"name\":\"Map\",\"knobs\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"radius\",\"k_nearest\",\"follow\",\"repeat_avoid\"],\"params\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"radius\",\"k_nearest\",\"follow\",\"repeat_avoid\"]},"
 "\"grain\":{\"name\":\"Grain\",\"knobs\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pitch_jitter\",\"pan_spread\",\"reverse\"],\"params\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pitch_jitter\",\"pan_spread\",\"reverse\"]},"
 "\"play\":{\"name\":\"Play / Out\",\"knobs\":[\"play_mode\",\"input_src\",\"mosaic_rate\",\"note_match\",\"dry_mix\",\"volume\",\"width\",\"sat\"],\"params\":[\"play_mode\",\"input_src\",\"mosaic_rate\",\"note_match\",\"dry_mix\",\"volume\",\"width\",\"sat\"]}"
@@ -151,16 +148,10 @@ typedef struct {
     float pitch_bend;       /* semitones */
     float mod_wheel;
 
-    /* Source picker (knob 8, Corpus page): folders scanned on a background thread. */
-    corpus_folder_t folders[INGEST_MAX_FOLDERS];
-    int             nfolders;
-    int             scan_done;      /* atomic acquire/release */
-    int             scan_started;
-    pthread_t       scan_thread;
-
     /* TODO corpus engine: pool, index (slice descriptors), analyst/loader threads +
      * atomic progress, grain voices[24], repeat-avoid ring, mosaic FFT state. */
-    char  corpus_path[512]; /* the selected/analysed folder */
+    char  corpus_file[512]; /* audio file picked via the filepath browser */
+    char  corpus_path[512]; /* its parent dir — the folder analysed as the corpus */
 } concat_t;
 
 static void set_param(void *instance, const char *key, const char *val);   /* fwd */
@@ -188,15 +179,6 @@ static void apply_value(concat_t *inst, int idx, const char *val) {
 
 /* ── Lifecycle ──────────────────────────────────────────────────────────────── */
 
-/* Folder scan runs off the SPI thread (opendir/stat over several roots). */
-static void *scan_worker(void *arg) {
-    concat_t *inst = (concat_t *)arg;
-    int n = ingest_scan_folders(inst->folders, INGEST_MAX_FOLDERS);
-    inst->nfolders = n;
-    __atomic_store_n(&inst->scan_done, 1, __ATOMIC_RELEASE);
-    return NULL;
-}
-
 static void *create_instance(const char *module_dir, const char *json_defaults) {
     (void)module_dir;
     concat_t *inst = calloc(1, sizeof(concat_t));
@@ -205,17 +187,12 @@ static void *create_instance(const char *module_dir, const char *json_defaults) 
     inst->current_page = PG_CORPUS;
     if (json_defaults && *json_defaults)
         set_param(inst, "state", json_defaults);        /* restore persisted params */
-    /* Scan source folders on a worker — keeps create_instance cheap (SPI blocks
-     * ~673ms at load). The Source knob shows "scanning..." until it completes. */
-    if (pthread_create(&inst->scan_thread, NULL, scan_worker, inst) == 0)
-        inst->scan_started = 1;
     return inst;
 }
 
 static void destroy_instance(void *instance) {
     concat_t *inst = (concat_t *)instance;
     if (!inst) return;
-    if (inst->scan_started) pthread_join(inst->scan_thread, NULL);
     /* TODO: stop analyst/loader threads, free pool + index. */
     free(inst);
 }
@@ -264,18 +241,7 @@ static void set_param(void *instance, const char *key, const char *val) {
         int slot = atoi(key + 5) - 1;                 /* 1-indexed → 0-indexed */
         if (slot >= 0 && slot < 8) {
             int idx = PAGE_KNOBS[inst->current_page][slot];
-            if (idx == P_SOURCE) {               /* pick a scanned folder → set corpus_path */
-                int done = __atomic_load_n(&inst->scan_done, __ATOMIC_ACQUIRE);
-                int maxidx = (done && inst->nfolders > 0) ? inst->nfolders - 1 : 0;
-                int cur = (int)inst->pv[P_SOURCE] + atoi(val);
-                if (cur < 0) cur = 0;
-                if (cur > maxidx) cur = maxidx;
-                inst->pv[P_SOURCE] = (float)cur;
-                if (done && inst->nfolders > 0) {
-                    strncpy(inst->corpus_path, inst->folders[cur].path, sizeof(inst->corpus_path) - 1);
-                    inst->corpus_path[sizeof(inst->corpus_path) - 1] = 0;
-                }
-            } else if (idx >= 0 && idx != P_ANALYZE) {  /* analyze = DSP-driven progress, read-only */
+            if (idx >= 0 && idx != P_ANALYZE) {  /* analyze = DSP-driven progress, read-only */
                 const pdef_t *p = &PARAMS[idx];
                 float step = (p->type == T_FLOAT) ? p->step : 1.0f;
                 inst->pv[idx] = clampf(inst->pv[idx] + atoi(val) * step, p->min, p->max);
@@ -293,9 +259,14 @@ static void set_param(void *instance, const char *key, const char *val) {
         return;
     }
 
-    if (strcmp(key, "corpus_path") == 0) {            /* set by File Browser JS (TODO) → arm analyst */
+    if (strcmp(key, "corpus_file") == 0) {            /* filepath browser → an audio file; use its folder */
+        strncpy(inst->corpus_file, val, sizeof(inst->corpus_file) - 1);
+        inst->corpus_file[sizeof(inst->corpus_file) - 1] = 0;
         strncpy(inst->corpus_path, val, sizeof(inst->corpus_path) - 1);
         inst->corpus_path[sizeof(inst->corpus_path) - 1] = 0;
+        char *slash = strrchr(inst->corpus_path, '/');   /* dirname → the corpus folder */
+        if (slash && slash != inst->corpus_path) *slash = 0;
+        /* TODO: arm analyst on inst->corpus_path. */
         return;
     }
 
@@ -344,16 +315,6 @@ static int fmt_value(const pdef_t *p, float v, char *buf, int buf_len) {
     return snprintf(buf, buf_len, p->unit ? "%.0f %s" : "%.1f", v, p->unit);
 }
 
-/* Source knob display: "scanning...", "-- none --", or "<folder> (<nfiles>)". */
-static int source_display(concat_t *inst, char *buf, int buf_len) {
-    if (!__atomic_load_n(&inst->scan_done, __ATOMIC_ACQUIRE)) return snprintf(buf, buf_len, "scanning...");
-    if (inst->nfolders <= 0) return snprintf(buf, buf_len, "-- none --");
-    int i = (int)inst->pv[P_SOURCE];
-    if (i < 0) i = 0;
-    if (i >= inst->nfolders) i = inst->nfolders - 1;
-    return snprintf(buf, buf_len, "%s (%d)", inst->folders[i].name, inst->folders[i].nfiles);
-}
-
 static int get_param(void *instance, const char *key, char *buf, int buf_len) {
     concat_t *inst = (concat_t *)instance;
     if (!inst || !key) return -1;
@@ -382,28 +343,27 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
         int slot = atoi(key + 5) - 1;
         if (slot >= 0 && slot < 8) {
             int idx = PAGE_KNOBS[inst->current_page][slot];
-            if (idx == P_SOURCE) return source_display(inst, buf, buf_len);
             if (idx >= 0) return fmt_value(&PARAMS[idx], inst->pv[idx], buf, buf_len);
         }
         return 0;
     }
 
     if (strcmp(key, "name") == 0) return snprintf(buf, buf_len, "Concat");
+    if (strcmp(key, "corpus_file") == 0) return snprintf(buf, buf_len, "%s", inst->corpus_file);
     if (strcmp(key, "corpus_path") == 0) return snprintf(buf, buf_len, "%s", inst->corpus_path);
-    if (strcmp(key, "source") == 0) return source_display(inst, buf, buf_len);
 
     /* State serialize: one key=value line per persistent param. */
     if (strcmp(key, "state") == 0) {
         int n = 0;
         for (int i = 0; i < NPARAMS; i++) {
-            if (i == P_RESCAN || i == P_ANALYZE || i == P_SOURCE) continue;  /* transient/read-only */
+            if (i == P_RESCAN || i == P_ANALYZE) continue;  /* transient/read-only */
             if (n >= buf_len) return buf_len - 1;           /* guard: buf full, avoid size_t underflow */
             const pdef_t *p = &PARAMS[i];
             if (p->type == T_FLOAT) n += snprintf(buf + n, buf_len - n, "%s=%.6f\n", p->key, (double)inst->pv[i]);
             else                    n += snprintf(buf + n, buf_len - n, "%s=%d\n",   p->key, (int)lrintf(inst->pv[i]));
         }
-        if (inst->corpus_path[0] && n < buf_len)
-            n += snprintf(buf + n, buf_len - n, "corpus_path=%s\n", inst->corpus_path);
+        if (inst->corpus_file[0] && n < buf_len)
+            n += snprintf(buf + n, buf_len - n, "corpus_file=%s\n", inst->corpus_file);
         return n;
     }
 

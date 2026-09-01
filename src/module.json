@@ -30,8 +30,8 @@
         },
         "corpus": {
           "name": "Corpus",
-          "knobs": ["pool_mb", "rescan", "slice_mode", "min_slice_ms", "max_slice_ms", "analyze", "silence_gate", "source"],
-          "params": ["pool_mb", "rescan", "slice_mode", "min_slice_ms", "max_slice_ms", "analyze", "silence_gate"]
+          "knobs": ["pool_mb", "rescan", "slice_mode", "min_slice_ms", "max_slice_ms", "analyze", "silence_gate"],
+          "params": ["corpus_file", "pool_mb", "rescan", "slice_mode", "min_slice_ms", "max_slice_ms", "analyze", "silence_gate"]
         },
         "map": {
           "name": "Map",
@@ -51,6 +51,7 @@
       }
     },
     "chain_params": [
+      {"key": "corpus_file", "name": "Source", "type": "filepath", "root": "/data/UserData", "filter": [".wav", ".flac", ".mp3"], "default": ""},
       {"key": "pool_mb", "name": "Pool Cap", "type": "int", "min": 16, "max": 512, "default": 128, "unit": "MB"},
       {"key": "rescan", "name": "Rescan", "type": "int", "min": 0, "max": 127, "default": 0},
       {"key": "slice_mode", "name": "Slice Mode", "type": "enum", "options": ["Onset", "Fixed"]},
