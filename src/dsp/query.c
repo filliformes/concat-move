@@ -39,6 +39,7 @@ void query_init(query_t *q, const float *qn, int nslices) {
 void query_set_repeat_avoid(query_t *q, int n) {
     if (n < 0) n = 0;
     if (n > QUERY_RING_MAX) n = QUERY_RING_MAX;
+    if (n == q->ring_cap) return;                 /* unchanged — keep the ring (render calls this per block) */
     q->ring_cap = n; q->ring_count = 0; q->ring_head = 0;
 }
 

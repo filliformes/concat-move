@@ -29,13 +29,19 @@
  *   OOM guard: pool = min(pool_mb, MemAvailable - 350MB), evict least-used.
  */
 
+#define _GNU_SOURCE
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sched.h>
 #include <pthread.h>
 #include "ingest.h"
+#include "corpus_engine.h"
+#include "grain.h"
 
 #define SAMPLE_RATE 44100.0f
 
@@ -138,10 +144,22 @@ typedef struct {
     float pitch_bend;       /* semitones */
     float mod_wheel;
 
-    /* TODO corpus engine: pool, index (slice descriptors), analyst/loader threads +
-     * atomic progress, grain voices[24], repeat-avoid ring, mosaic FFT state. */
     char  corpus_file[512]; /* audio file picked via the filepath browser */
     char  corpus_path[512]; /* its parent dir — the folder analysed as the corpus */
+
+    /* Engine */
+    grain_engine_t   ge;                 /* render-thread grain cloud */
+    corpus_index_t  *index;              /* current corpus (atomic acquire/release) */
+    pthread_t        analyst;            /* single worker; builds the index off-thread */
+    pthread_mutex_t  lock;
+    pthread_cond_t   cond;
+    int              arm;                /* a (re)analysis is requested */
+    int              shutdown;
+    int              analyst_started;
+    char             pending_path[512];
+    int              a_slice_mode, a_min_len, a_max_len, a_pool_samples;  /* snapshot at arm */
+    float            a_sil;
+    volatile int     progress;           /* 0..100, served by get_param("analyze") */
 } concat_t;
 
 static void set_param(void *instance, const char *key, const char *val);   /* fwd */
@@ -167,6 +185,81 @@ static void apply_value(concat_t *inst, int idx, const char *val) {
      * → re-analyse or re-guard pool. Handled once the engine exists. */
 }
 
+/* ── Engine: analyst worker + helpers ───────────────────────────────────────── */
+
+/* Map x_desc/y_desc enum (Bright/Pitch/Loud/Noisy/Rolloff/MFCC1-3) → descriptor index. */
+static int desc_index(int e) {
+    switch (e) {
+        case 0: return D_CENTROID_MEAN;  case 1: return D_PITCH;      case 2: return D_LOUD_MEAN;
+        case 3: return D_FLATNESS_MEAN;  case 4: return D_ZCR_MEAN;   /* Rolloff → ZCR proxy */
+        case 5: return D_MFCC0_MEAN + 1; case 6: return D_MFCC0_MEAN + 2; case 7: return D_MFCC0_MEAN + 3;
+        default: return D_CENTROID_MEAN;
+    }
+}
+
+/* MemAvailable in MB (parse /proc/meminfo directly — never shm_open). 0 on failure. */
+static long mem_available_mb(void) {
+    int fd = open("/proc/meminfo", O_RDONLY);
+    if (fd < 0) return 0;
+    char b[2048];
+    int n = (int)read(fd, b, sizeof(b) - 1);
+    close(fd);
+    if (n <= 0) return 0;
+    b[n] = 0;
+    char *p = strstr(b, "MemAvailable:");
+    return p ? atol(p + 13) / 1024 : 0;   /* kB → MB */
+}
+
+/* Snapshot the corpus path + analysis params and wake the analyst. */
+static void arm_analyst(concat_t *inst) {
+    if (!inst->analyst_started || inst->corpus_path[0] == 0) return;
+    pthread_mutex_lock(&inst->lock);
+    strncpy(inst->pending_path, inst->corpus_path, sizeof(inst->pending_path) - 1);
+    inst->pending_path[sizeof(inst->pending_path) - 1] = 0;
+    inst->a_slice_mode = (int)inst->pv[P_SLICE_MODE];
+    inst->a_min_len = (int)(inst->pv[P_MIN_SLICE] * 44.1f);
+    inst->a_max_len = (int)(inst->pv[P_MAX_SLICE] * 44.1f);
+    inst->a_sil = inst->pv[P_SILENCE_GATE];
+    long pool_mb = (long)inst->pv[P_POOL_MB];
+    long avail = mem_available_mb();                 /* OOM guard: leave a 350 MB reserve */
+    long cap = pool_mb;
+    if (avail > 0) { long usable = avail - 350; if (usable < 32) usable = 32; if (cap > usable) cap = usable; }
+    if (cap < 8) cap = 8;
+    inst->a_pool_samples = (int)(cap * 1024 * 1024 / 2);   /* MB → int16 samples */
+    inst->arm = 1;
+    pthread_cond_signal(&inst->cond);
+    pthread_mutex_unlock(&inst->lock);
+}
+
+static void *analyst_thread(void *arg) {
+    concat_t *inst = (concat_t *)arg;
+    struct sched_param sp; sp.sched_priority = 0;
+    sched_setscheduler(0, SCHED_OTHER, &sp);         /* demote off the shim's FIFO 70 */
+    cpu_set_t cs; CPU_ZERO(&cs); CPU_SET(0, &cs); CPU_SET(1, &cs); CPU_SET(2, &cs);
+    sched_setaffinity(0, sizeof(cs), &cs);           /* cores 0-2 (core 3 = SPI FIFO 90) */
+
+    for (;;) {
+        pthread_mutex_lock(&inst->lock);
+        while (!inst->arm && !inst->shutdown) pthread_cond_wait(&inst->cond, &inst->lock);
+        if (inst->shutdown) { pthread_mutex_unlock(&inst->lock); break; }
+        inst->arm = 0;
+        char path[512];
+        strncpy(path, inst->pending_path, sizeof(path) - 1); path[sizeof(path) - 1] = 0;
+        int sm = inst->a_slice_mode, mn = inst->a_min_len, mx = inst->a_max_len, ps = inst->a_pool_samples;
+        float sg = inst->a_sil;
+        pthread_mutex_unlock(&inst->lock);
+
+        if (path[0]) {
+            inst->progress = 0;
+            corpus_index_t *ni = corpus_index_build(path, 44100, sm, mn, mx, sg, ps, &inst->progress);
+            corpus_index_t *old = __atomic_exchange_n(&inst->index, ni, __ATOMIC_ACQ_REL);
+            if (old) { usleep(60000); corpus_index_free(old); }  /* let one render block pass */
+            inst->progress = ni ? 100 : 0;
+        }
+    }
+    return NULL;
+}
+
 /* ── Lifecycle ──────────────────────────────────────────────────────────────── */
 
 static void *create_instance(const char *module_dir, const char *json_defaults) {
@@ -174,15 +267,28 @@ static void *create_instance(const char *module_dir, const char *json_defaults) 
     concat_t *inst = calloc(1, sizeof(concat_t));
     if (!inst) return NULL;
     for (int i = 0; i < NPARAMS; i++) inst->pv[i] = PARAMS[i].def;
+    grain_engine_init(&inst->ge);
+    pthread_mutex_init(&inst->lock, NULL);
+    pthread_cond_init(&inst->cond, NULL);
+    if (pthread_create(&inst->analyst, NULL, analyst_thread, inst) == 0) inst->analyst_started = 1;
     if (json_defaults && *json_defaults)
-        set_param(inst, "state", json_defaults);        /* restore persisted params */
+        set_param(inst, "state", json_defaults);        /* restore params; may arm the analyst */
     return inst;
 }
 
 static void destroy_instance(void *instance) {
     concat_t *inst = (concat_t *)instance;
     if (!inst) return;
-    /* TODO: stop analyst/loader threads, free pool + index. */
+    if (inst->analyst_started) {
+        pthread_mutex_lock(&inst->lock);
+        inst->shutdown = 1;
+        pthread_cond_signal(&inst->cond);
+        pthread_mutex_unlock(&inst->lock);
+        pthread_join(inst->analyst, NULL);
+        pthread_mutex_destroy(&inst->lock);
+        pthread_cond_destroy(&inst->cond);
+    }
+    corpus_index_free(inst->index);
     free(inst);
 }
 
@@ -232,7 +338,14 @@ static void set_param(void *instance, const char *key, const char *val) {
         inst->corpus_path[sizeof(inst->corpus_path) - 1] = 0;
         char *slash = strrchr(inst->corpus_path, '/');   /* dirname → the corpus folder */
         if (slash && slash != inst->corpus_path) *slash = 0;
-        /* TODO: arm analyst on inst->corpus_path. */
+        arm_analyst(inst);                                /* analyse the picked folder */
+        return;
+    }
+
+    if (strcmp(key, "rescan") == 0) {                     /* Pattern-3 action → re-analyse */
+        int v = atoi(val);
+        inst->pv[P_RESCAN] = (float)(v < 0 ? 0 : (v > 127 ? 127 : v));
+        if (v != 0) arm_analyst(inst);
         return;
     }
 
@@ -314,6 +427,7 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
     if (strcmp(key, "name") == 0) return snprintf(buf, buf_len, "Concat");
     if (strcmp(key, "corpus_file") == 0) return snprintf(buf, buf_len, "%s", inst->corpus_file);
     if (strcmp(key, "corpus_path") == 0) return snprintf(buf, buf_len, "%s", inst->corpus_path);
+    if (strcmp(key, "analyze") == 0) return snprintf(buf, buf_len, "%d", inst->progress);  /* live 0..100 */
 
     /* State serialize: one key=value line per persistent param. */
     if (strcmp(key, "state") == 0) {
@@ -352,23 +466,31 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
 
 static void render_block(void *instance, int16_t *out_lr, int frames) {
     concat_t *inst = (concat_t *)instance;
-    (void)inst;
-    /*
-     * SCAFFOLD: silence. No corpus is loaded until a folder is analysed, so
-     * silence is the correct init state. Replace with the grain engine:
-     *   1. If play_mode == Mosaic: read line/mic in (host->mapped_memory +
-     *      host->audio_in_offset), FFT, extract target descriptors this block.
-     *   2. Determine target point (Map: x_pos/y_pos; Notes: nearest by pitch;
-     *      Mosaic: live descriptor vector; follow=LFO/Sequence drives it).
-     *   3. Schedule grains at `density`; each grain: kNN query (weighted-Euclidean,
-     *      RobustScaled dims) → random among K within `radius`, excluding the
-     *      repeat_avoid ring buffer → play slice audio with grain_env window,
-     *      pitch (+jitter), pan_spread, optional reverse. Grain-LOCK window-phase
-     *      params at grain start.
-     *   4. Sum grains, apply width + sat + volume, add dry_mix (Mosaic), clamp int16.
-     * NEVER alloc / printf / lock here. Pool + index live in resident memory.
-     */
-    memset(out_lr, 0, sizeof(int16_t) * 2 * frames);
+    corpus_index_t *ix = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE);
+    if (!ix || ix->nslices == 0) { memset(out_lr, 0, sizeof(int16_t) * 2 * frames); return; }
+
+    /* Repeat-avoid depth can change live. */
+    query_set_repeat_avoid(&ix->query, (int)inst->pv[P_REPEAT_AVOID]);
+
+    grain_params_t gp;
+    gp.k_nearest    = (int)inst->pv[P_K_NEAREST];
+    gp.radius       = inst->pv[P_RADIUS];
+    gp.density      = inst->pv[P_DENSITY];
+    gp.grain_size_ms = inst->pv[P_GRAIN_SIZE];
+    gp.grain_env    = (int)inst->pv[P_GRAIN_ENV];
+    gp.pitch_semi   = inst->pv[P_PITCH];
+    gp.pitch_jitter = inst->pv[P_PITCH_JITTER];
+    gp.pan_spread   = inst->pv[P_PAN_SPREAD];
+    gp.reverse_prob = inst->pv[P_REVERSE];
+    gp.volume       = inst->pv[P_VOLUME];
+    gp.width        = inst->pv[P_WIDTH];
+
+    /* v1: Map navigation (x_pos/y_pos over the two chosen descriptors). Notes /
+     * Mosaic targeting = TODO; they render the Map target for now. */
+    float t[NDESC], w[NDESC];
+    query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
+                     inst->pv[P_X_POS], inst->pv[P_Y_POS], t, w);
+    grain_render(&inst->ge, ix, t, w, &gp, out_lr, frames, 44100);
 }
 
 /* ── API v2 export (8 fields — get_error REQUIRED) ──────────────────────────── */
