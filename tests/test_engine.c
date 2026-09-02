@@ -10,6 +10,11 @@ static void check(const char *name, int cond, const char *extra) {
     printf("  %s %s%s%s\n", cond ? "PASS" : "FAIL", name, extra ? "  -> " : "", extra ? extra : "");
     if (cond) npass++; else nfail++;
 }
+static double qn_range(corpus_index_t *x, int d) {   /* spread of one descriptor column */
+    double lo = 1e30, hi = -1e30;
+    for (int i = 0; i < x->nslices; i++) { double v = x->qn[i * NDESC + d]; if (v < lo) lo = v; if (v > hi) hi = v; }
+    return hi - lo;
+}
 
 int main(void) {
     const char *folder = "/data/UserData/UserLibrary/Samples/MAITRISE";
@@ -86,6 +91,20 @@ int main(void) {
 
     { char kb[64]; snprintf(kb, sizeof(kb), "kclusters=%d", ix->kclusters);
       check("k-means clusters built", ix->kclusters > 0 && ix->centroids != NULL, kb); }
+
+    /* OOM eviction: a small (overflowing) pool must build, respect the cap, and
+     * still cover the corpus (descriptor range not collapsed to the first files). */
+    int pq = 0;
+    corpus_index_t *small = corpus_index_build(folder, 44100, 0, 2646, 17640, 0.02f, 250000, NULL, 0, &pq);
+    check("oom: overflowing pool still builds", small && small->nslices > 0, NULL);
+    if (small) {
+        check("oom: respects pool cap", small->pool_len <= 250000, NULL);
+        double rb = qn_range(ix, D_CENTROID_MEAN), rs = qn_range(small, D_CENTROID_MEAN);
+        char ob[128]; snprintf(ob, sizeof(ob), "centroid range small/big=%.2f  (n=%d vs %d)",
+                               rb > 0 ? rs / rb : 0.0, small->nslices, ix->nslices);
+        check("oom: coverage spreads (range not collapsed)", rb <= 0.0 || rs > 0.4 * rb, ob);
+        corpus_index_free(small);
+    }
 
     corpus_index_free(ix);
 

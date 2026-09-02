@@ -206,8 +206,14 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
         corpus_index_free(ix); return NULL;
     }
 
-    int pool_full = 0;
-    for (int f = 0; f < nfiles && !pool_full; f++) {
+    /* OOM eviction: analyse every file, but cap the pooled AUDIO. A keep-stride
+     * driven by how full the pool is decimates the retained (audible) slices so
+     * they spread across the whole corpus — even within one big file — instead
+     * of truncating to the first files. A corpus that fits keeps everything. */
+    int  oom_stop = 0;      /* set only on a real alloc failure — a hard stop */
+    long slice_idx = 0;     /* global slice counter, for the decimation stride */
+    for (int f = 0; f < nfiles && !oom_stop; f++) {
+        if (ix->pool_len >= (long)ix->pool_cap * 98 / 100) break;  /* full even after decimation → stop decoding the tail */
         int len = 0;
         float *audio = ingest_decode(paths[f], sr, &len);
         if (audio && len > 0) {
@@ -215,13 +221,16 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
                 ? concat_fixed_slice(a, audio, len, max_len, sil_gate, ranges, MAX_SLICES_FILE)
                 : concat_onset_slice(a, audio, len, min_len, max_len, sil_gate, ranges, MAX_SLICES_FILE);
             for (int s = 0; s < nr; s++) {
+                long pf = (long)ix->pool_len * 100 / (ix->pool_cap > 0 ? ix->pool_cap : 1);   /* % full */
+                int stride = pf < 75 ? 1 : pf < 88 ? 2 : pf < 95 ? 4 : 8;   /* pack to 75%, then thin the tail */
+                if ((slice_idx++ % stride) != 0) continue;         /* decimate as the pool fills */
                 int slen = ranges[s].len;
-                if (ix->pool_len + slen > ix->pool_cap) { pool_full = 1; break; }
+                if (ix->pool_len + slen > ix->pool_cap) continue;  /* no room → drop audio, keep scanning */
                 if (ix->nslices >= scap) {
                     int ns = scap * 2;
                     cslice_t *nsl = (cslice_t *)realloc(ix->slices, sizeof(cslice_t) * ns);
                     float    *nr2 = (float *)realloc(raw, sizeof(float) * NDESC * ns);
-                    if (!nsl || !nr2) { pool_full = 1; if (nsl) ix->slices = nsl; if (nr2) raw = nr2; break; }
+                    if (!nsl || !nr2) { oom_stop = 1; if (nsl) ix->slices = nsl; if (nr2) raw = nr2; break; }
                     ix->slices = nsl; raw = nr2; scap = ns;
                 }
                 const float *src = &audio[ranges[s].start];
