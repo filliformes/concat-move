@@ -21,6 +21,7 @@ typedef struct {
     double         pos;        /* fractional read position */
     double         rate;       /* playback rate (pitch) */
     int            grain_len;  /* grain length (output samples) */
+    int            xfade;      /* loop-seam crossfade samples (0 = grain fits slice, no loop) */
     int            age;        /* samples elapsed */
     float          panl, panr;
     float          gain;       /* per-grain gain (carries the note-voice's envelope level) */

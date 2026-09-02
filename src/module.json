@@ -47,8 +47,8 @@
         },
         "play": {
           "name": "Play",
-          "knobs": ["play_mode", "input_src", "mosaic_rate", "note_match", "pressure", "press_amt", "press_inv", "poly"],
-          "params": ["play_mode", "input_src", "mosaic_rate", "note_match", "pressure", "press_amt", "press_inv", "poly"]
+          "knobs": ["play_mode", "input_src", "mosaic_rate", "note_match", "pressure", "press_amt", "vel_amt", "poly"],
+          "params": ["play_mode", "input_src", "mosaic_rate", "note_match", "pressure", "press_amt", "vel_amt", "poly"]
         },
         "out": {
           "name": "Out",
@@ -75,7 +75,7 @@
       {"key": "follow", "name": "Follow", "type": "enum", "options": ["Manual", "LFO", "Sequence"]},
       {"key": "repeat_avoid", "name": "Repeat Avoid", "type": "int", "min": 0, "max": 16, "default": 4},
       {"key": "density", "name": "Density", "type": "float", "min": 1, "max": 100, "default": 20, "step": 1, "unit": "g/s", "display_format": "%.0f"},
-      {"key": "grain_size", "name": "Grain Size", "type": "float", "min": 10, "max": 500, "default": 120, "step": 5, "unit": "ms", "display_format": "%.0f"},
+      {"key": "grain_size", "name": "Grain Size", "type": "float", "min": 10, "max": 2000, "default": 120, "step": 1, "unit": "ms", "display_format": "%.0f"},
       {"key": "grain_env", "name": "Grain Env", "type": "enum", "options": ["Hann", "Tukey", "Tri", "Gauss", "Expo", "RevExpo", "Trapez", "Black"]},
       {"key": "pitch", "name": "Pitch", "type": "float", "min": -24, "max": 24, "default": 0, "step": 1, "unit": "st", "display_format": "%.0f"},
       {"key": "pitch_jitter", "name": "Pitch Jitter", "type": "float", "min": 0, "max": 1, "default": 0, "step": 0.01},

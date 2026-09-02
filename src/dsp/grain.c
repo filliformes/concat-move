@@ -102,13 +102,24 @@ static void spawn_grain(grain_engine_t *ge, corpus_index_t *ix,
     g->age  = 0;
     g->gain = gain;
 
+    /* A grain that outlasts its slice loops it; crossfade the loop seam to kill the click. */
+    if (glen > g->len) {
+        int xf = (int)(0.020f * sr);              /* 20 ms seam crossfade */
+        if (xf > g->len / 2) xf = g->len / 2;     /* short slice → cap to half its length */
+        if (xf < 1) xf = 1;
+        g->xfade = xf;
+    } else {
+        g->xfade = 0;                             /* fits the slice → straight read, window handles edges */
+    }
+    int period = g->len - g->xfade;
+
     float jit = 1.0f + (g_rand(ge) * 2.0f - 1.0f) * gp->pitch_jitter * 0.5f;
     g->rate = powf(2.0f, gp->pitch_semi / 12.0f) * jit;
     if (target_hz > 0.0f && sl->pitch > 0.0f) g->rate *= target_hz / sl->pitch;   /* Pitch mode: retune to the note */
     if (g->rate < 0.01f) g->rate = 0.01f;
 
     g->reverse = (g_rand(ge) < gp->reverse_prob) ? 1 : 0;
-    g->pos = g->reverse ? (double)(g->len - 1) : 0.0;
+    g->pos = g->reverse ? (double)(period - 1) : 0.0;
 
     float pan = (g_rand(ge) * 2.0f - 1.0f) * gp->pan_spread;   /* -spread..spread */
     g->panl = 0.5f * (1.0f - pan);
@@ -137,18 +148,38 @@ void grain_mix(grain_engine_t *ge, const grain_params_t *gp, int16_t *out_lr, in
         for (int v = 0; v < GRAIN_VOICES; v++) {
             grain_t *g = &ge->voices[v];
             if (!g->active) continue;
-            int len = g->len;
-            int ip = (int)g->pos % len; if (ip < 0) ip += len;   /* wrap: grain loops the slice */
-            int ip1 = ip + 1; if (ip1 >= len) ip1 = 0;
-            float s0 = g->audio[ip]  * (1.0f / 32768.0f);
-            float s1 = g->audio[ip1] * (1.0f / 32768.0f);
-            float frac = (float)(g->pos - floor(g->pos));
-            float samp = (s0 + frac * (s1 - s0)) * grain_env_val(gp->grain_env, g->age, g->grain_len) * g->gain;
+            int len = g->len, xf = g->xfade, period = len - xf;   /* loop period (== len when xf==0) */
+            double p = g->pos;
+
+            int ip = (int)p; if (ip >= len) ip -= len;
+            int ip1 = ip + 1; if (ip1 >= len) ip1 -= len;
+            float frac = (float)(p - floor(p));
+            float samp = g->audio[ip] * (1.0f / 32768.0f)
+                       + frac * (g->audio[ip1] - g->audio[ip]) * (1.0f / 32768.0f);
+
+            if (xf > 0 && p < xf) {           /* seam region: blend head with the slice tail (equal-length) */
+                double tp = p + period;       /* tail position in [period, len) */
+                int it = (int)tp; if (it >= len) it -= len;
+                int it1 = it + 1; if (it1 >= len) it1 -= len;
+                float tfrac = (float)(tp - floor(tp));
+                float tail = g->audio[it] * (1.0f / 32768.0f)
+                           + tfrac * (g->audio[it1] - g->audio[it]) * (1.0f / 32768.0f);
+                float wgt = (float)(p / xf);  /* 0 → tail, 1 → head */
+                samp = tail * (1.0f - wgt) + samp * wgt;
+            }
+
+            float env = grain_env_val(gp->grain_env, g->age, g->grain_len);
+            /* Guaranteed edge declick: force a true-zero fade in/out for every window
+             * (Gaussian/Expodec/etc. don't reach 0 at their ends → they'd click otherwise). */
+            const int decl = 32;   /* ~0.7 ms */
+            if (g->age < decl)                        env *= (float)g->age / decl;
+            else if (g->age >= g->grain_len - decl)   env *= (float)(g->grain_len - g->age) / decl;
+            samp *= env * g->gain;
             l += samp * g->panl;
             r += samp * g->panr;
             g->pos += g->reverse ? -g->rate : g->rate;
-            if (g->pos >= len) g->pos -= len;
-            if (g->pos < 0)    g->pos += len;
+            if (g->pos >= period) g->pos -= period;
+            if (g->pos < 0)       g->pos += period;
             g->age++;
             if (g->age >= g->grain_len) g->active = 0;
         }

@@ -73,7 +73,7 @@ enum {
     /* Out — DJ filter + saturation (all modes) */
     P_CUTOFF, P_RESO,
     /* Expression — pad pressure (aftertouch) → destination */
-    P_PRESSURE, P_PRESS_AMT, P_PRESS_INV, P_POLY,
+    P_PRESSURE, P_PRESS_AMT, P_VEL_AMT, P_POLY,
     /* Shape — amp + filter envelopes */
     P_AMP_ATK, P_AMP_DEC, P_AMP_SUS, P_AMP_REL, P_FILT_AMT, P_FILT_ATK, P_FILT_DEC, P_FILT_SUS,
     NPARAMS
@@ -86,7 +86,6 @@ static const char *ENV_DESC[]       = {"Bright", "Pitch", "Loud", "Noisy", "Roll
 static const char *ENV_FOLLOW[]     = {"Manual", "LFO", "Sequence"};
 static const char *ENV_GRAIN[]      = {"Hann", "Tukey", "Tri", "Gauss", "Expo", "RevExpo", "Trapez", "Black"};
 static const char *ENV_PLAY_MODE[]  = {"Map", "Notes", "Mosaic"};
-static const char *ENV_ONOFF[]      = {"Off", "On"};
 static const char *ENV_PRESSURE[]   = {"Off", "Proximity", "Density", "Bright", "Sat", "Pitch", "Grain", "Jitter"};
 static const char *ENV_INPUT_SRC[]  = {"Line", "Mic"};
 static const char *ENV_MOSAIC_RATE[]= {"Onset", "1/16", "1/8", "1/4"};
@@ -123,7 +122,7 @@ static const pdef_t PARAMS[NPARAMS] = {
     [P_REPEAT_AVOID]  = {"repeat_avoid", "Repeat Avoid", T_INT,    0,  16, 1,  NULL, 0, 4},
     /* Grain */
     [P_DENSITY]       = {"density",      "Density",      T_FLOAT,  1, 100, 1,  NULL, 0, 20,  "g/s"},
-    [P_GRAIN_SIZE]    = {"grain_size",   "Grain Size",   T_FLOAT, 10,2000, 5,  NULL, 0, 120, "ms"},
+    [P_GRAIN_SIZE]    = {"grain_size",   "Grain Size",   T_FLOAT, 10,2000, 1,  NULL, 0, 120, "ms"},
     [P_GRAIN_ENV]     = {"grain_env",    "Grain Env",    T_ENUM,   0,   7, 1,  ENV_GRAIN, 8, 0},
     [P_PITCH]         = {"pitch",        "Pitch",        T_FLOAT,-24,  24, 1,  NULL, 0, 0,   "st"},
     [P_PITCH_JITTER]  = {"pitch_jitter", "Pitch Jitter", T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
@@ -146,7 +145,7 @@ static const pdef_t PARAMS[NPARAMS] = {
     /* Expression */
     [P_PRESSURE]      = {"pressure",     "Pressure",     T_ENUM,   0,   7, 1,  ENV_PRESSURE, 8, 1},   /* default Proximity */
     [P_PRESS_AMT]     = {"press_amt",    "Press Amt",    T_FLOAT,  0,   1, 0.01f, NULL, 0, 1.0f},
-    [P_PRESS_INV]     = {"press_inv",    "Invert",       T_ENUM,   0,   1, 1,  ENV_ONOFF, 2, 0},
+    [P_VEL_AMT]       = {"vel_amt",      "Vel Amount",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 1.0f},
     [P_POLY]          = {"poly",         "Polyphony",    T_INT,    1, 128, 1,  NULL, 0, 48},
     /* Shape — amp + filter envelopes (0..1 time knobs mapped to seconds; sus/amt are levels) */
     [P_AMP_ATK]       = {"amp_atk",      "Amp Atk",      T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.01f},
@@ -171,7 +170,7 @@ static const char UI_HIERARCHY[] =
 "\"map\":{\"name\":\"Map\",\"knobs\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"radius\",\"k_nearest\",\"follow\",\"repeat_avoid\"],\"params\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"radius\",\"k_nearest\",\"follow\",\"repeat_avoid\"]},"
 "\"grain\":{\"name\":\"Grain\",\"knobs\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pan_spread\",\"grain_rand\",\"reverse\",\"pitch_jitter\"],\"params\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pan_spread\",\"grain_rand\",\"reverse\",\"pitch_jitter\"]},"
 "\"shape\":{\"name\":\"Shape\",\"knobs\":[\"amp_atk\",\"amp_dec\",\"amp_sus\",\"amp_rel\",\"filt_amt\",\"filt_atk\",\"filt_dec\",\"filt_sus\"],\"params\":[\"amp_atk\",\"amp_dec\",\"amp_sus\",\"amp_rel\",\"filt_amt\",\"filt_atk\",\"filt_dec\",\"filt_sus\"]},"
-"\"play\":{\"name\":\"Play\",\"knobs\":[\"play_mode\",\"input_src\",\"mosaic_rate\",\"note_match\",\"pressure\",\"press_amt\",\"press_inv\",\"poly\"],\"params\":[\"play_mode\",\"input_src\",\"mosaic_rate\",\"note_match\",\"pressure\",\"press_amt\",\"press_inv\",\"poly\"]},"
+"\"play\":{\"name\":\"Play\",\"knobs\":[\"play_mode\",\"input_src\",\"mosaic_rate\",\"note_match\",\"pressure\",\"press_amt\",\"vel_amt\",\"poly\"],\"params\":[\"play_mode\",\"input_src\",\"mosaic_rate\",\"note_match\",\"pressure\",\"press_amt\",\"vel_amt\",\"poly\"]},"
 "\"out\":{\"name\":\"Out\",\"knobs\":[\"cutoff\",\"resonance\",\"sat\",\"dry_mix\",\"volume\",\"width\"],\"params\":[\"cutoff\",\"resonance\",\"sat\",\"dry_mix\",\"volume\",\"width\"]}"
 "}}";
 
@@ -621,7 +620,6 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
     /* Pad pressure (aftertouch) → chosen destination (Invert flips the sign).
      * Grain-domain destinations here; Bright/Sat applied in the post chain below. */
     float at   = inst->aftertouch * inst->pv[P_PRESS_AMT];
-    if ((int)inst->pv[P_PRESS_INV]) at = -at;
     int   pdst = (int)inst->pv[P_PRESSURE];
     if (inst->aftertouch > 0.0f) switch (pdst) {
         case 1: gp.radius       = clampf(gp.radius + at, 0.0f, 1.0f); break;             /* Proximity */
@@ -669,7 +667,9 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
                                  inst->pv[P_X_POS], inst->pv[P_Y_POS], t, w);
                 target_hz = note_hz;
             }
-            grain_schedule(&inst->ge, ix, t, w, &gp, nv->amp_level * nv->vel, target_hz, &nv->accum, frames, 44100);
+            /* Velocity Amount: 0 = velocity ignored (always full), 1 = velocity fully scales gain */
+            float ev = 1.0f - inst->pv[P_VEL_AMT] * (1.0f - nv->vel);
+            grain_schedule(&inst->ge, ix, t, w, &gp, nv->amp_level * ev, target_hz, &nv->accum, frames, 44100);
         }
     } else if (pm == 2 && inst->host && inst->mono_analysis) {   /* Mosaic: target from live line/mic input */
         int16_t *ain = (int16_t *)(inst->host->mapped_memory + inst->host->audio_in_offset);
