@@ -76,7 +76,7 @@ static inline float grain_env_val(int env, int age, int glen) {
 
 static void spawn_grain(grain_engine_t *ge, corpus_index_t *ix,
                         const float *target, const float *weight,
-                        const grain_params_t *gp, int sr) {
+                        const grain_params_t *gp, float gain, float target_hz, int sr) {
     int sel = query_select(&ix->query, target, weight, gp->k_nearest, gp->radius);
     if (sel < 0 || sel >= ix->nslices) return;
 
@@ -96,15 +96,15 @@ static void spawn_grain(grain_engine_t *ge, corpus_index_t *ix,
 
     float gms = gp->grain_size_ms;                        /* random size spread per grain */
     if (gp->grain_rand > 0.0f) gms *= 1.0f + (g_rand(ge) * 2.0f - 1.0f) * gp->grain_rand;
-    int glen = (int)(gms * 0.001f * sr);                 /* grain-lock length at spawn */
-    if (glen > g->len) glen = g->len;
+    int glen = (int)(gms * 0.001f * sr);                 /* may exceed the slice — slice loops under the window */
     if (glen < 1) glen = 1;
     g->grain_len = glen;
-    g->age = 0;
+    g->age  = 0;
+    g->gain = gain;
 
     float jit = 1.0f + (g_rand(ge) * 2.0f - 1.0f) * gp->pitch_jitter * 0.5f;
     g->rate = powf(2.0f, gp->pitch_semi / 12.0f) * jit;
-    if (gp->target_hz > 0.0f && sl->pitch > 0.0f) g->rate *= gp->target_hz / sl->pitch;   /* Notes: retune to the played note */
+    if (target_hz > 0.0f && sl->pitch > 0.0f) g->rate *= target_hz / sl->pitch;   /* Pitch mode: retune to the note */
     if (g->rate < 0.01f) g->rate = 0.01f;
 
     g->reverse = (g_rand(ge) < gp->reverse_prob) ? 1 : 0;
@@ -122,39 +122,38 @@ static inline int16_t clamp16(float x) {
     return (int16_t)(x * 32767.0f);
 }
 
-void grain_render(grain_engine_t *ge, corpus_index_t *ix,
-                  const float *target, const float *weight,
-                  const grain_params_t *gp, int16_t *out_lr, int frames, int sr) {
-    if (!ix || ix->nslices == 0) { memset(out_lr, 0, sizeof(int16_t) * 2 * frames); return; }
+void grain_schedule(grain_engine_t *ge, corpus_index_t *ix,
+                    const float *target, const float *weight, const grain_params_t *gp,
+                    float gain, float target_hz, double *accum, int frames, int sr) {
+    if (!ix || ix->nslices == 0) return;
+    *accum += (double)gp->density * frames / sr;
+    while (*accum >= 1.0) { spawn_grain(ge, ix, target, weight, gp, gain, target_hz, sr); *accum -= 1.0; }
+}
 
-    double per_sample = (double)gp->density / sr;   /* grains scheduled per output sample */
-
+void grain_mix(grain_engine_t *ge, const grain_params_t *gp, int16_t *out_lr, int frames, int sr) {
+    (void)sr;
     for (int i = 0; i < frames; i++) {
-        ge->sched_accum += per_sample;
-        while (ge->sched_accum >= 1.0) { spawn_grain(ge, ix, target, weight, gp, sr); ge->sched_accum -= 1.0; }
-
         float l = 0.0f, r = 0.0f;
         for (int v = 0; v < GRAIN_VOICES; v++) {
             grain_t *g = &ge->voices[v];
             if (!g->active) continue;
-            int ip = (int)g->pos;
-            if (ip < 0 || ip >= g->len) { g->active = 0; continue; }
-            float s0 = g->audio[ip] * (1.0f / 32768.0f);
-            float s1 = (ip + 1 < g->len) ? g->audio[ip + 1] * (1.0f / 32768.0f) : s0;
-            float samp = s0 + (float)(g->pos - ip) * (s1 - s0);
-            samp *= grain_env_val(gp->grain_env, g->age, g->grain_len);
+            int len = g->len;
+            int ip = (int)g->pos % len; if (ip < 0) ip += len;   /* wrap: grain loops the slice */
+            int ip1 = ip + 1; if (ip1 >= len) ip1 = 0;
+            float s0 = g->audio[ip]  * (1.0f / 32768.0f);
+            float s1 = g->audio[ip1] * (1.0f / 32768.0f);
+            float frac = (float)(g->pos - floor(g->pos));
+            float samp = (s0 + frac * (s1 - s0)) * grain_env_val(gp->grain_env, g->age, g->grain_len) * g->gain;
             l += samp * g->panl;
             r += samp * g->panr;
             g->pos += g->reverse ? -g->rate : g->rate;
+            if (g->pos >= len) g->pos -= len;
+            if (g->pos < 0)    g->pos += len;
             g->age++;
             if (g->age >= g->grain_len) g->active = 0;
         }
-
-        /* stereo width (mid/side) then volume */
         float mid = 0.5f * (l + r), side = 0.5f * (l - r) * gp->width;
-        l = (mid + side) * gp->volume;
-        r = (mid - side) * gp->volume;
-        out_lr[i * 2]     = clamp16(l);
-        out_lr[i * 2 + 1] = clamp16(r);
+        out_lr[i * 2]     = clamp16((mid + side) * gp->volume);
+        out_lr[i * 2 + 1] = clamp16((mid - side) * gp->volume);
     }
 }

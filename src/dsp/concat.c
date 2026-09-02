@@ -131,10 +131,10 @@ static const pdef_t PARAMS[NPARAMS] = {
     [P_REVERSE]       = {"reverse",      "Reverse",      T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
     [P_GRAIN_RAND]    = {"grain_rand",   "Grain Rand",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
     /* Play / Out */
-    [P_PLAY_MODE]     = {"play_mode",    "Play Mode",    T_ENUM,   0,   2, 1,  ENV_PLAY_MODE, 3, 0},
+    [P_PLAY_MODE]     = {"play_mode",    "Play Mode",    T_ENUM,   0,   2, 1,  ENV_PLAY_MODE, 3, 1},   /* default Notes */
     [P_INPUT_SRC]     = {"input_src",    "Input Src",    T_ENUM,   0,   1, 1,  ENV_INPUT_SRC, 2, 0},
     [P_MOSAIC_RATE]   = {"mosaic_rate",  "Mosaic Rate",  T_ENUM,   0,   3, 1,  ENV_MOSAIC_RATE, 4, 0},
-    [P_NOTE_MATCH]    = {"note_match",   "Note Match",   T_ENUM,   0,   2, 1,  ENV_NOTE_MATCH, 3, 1},
+    [P_NOTE_MATCH]    = {"note_match",   "Note Match",   T_ENUM,   0,   2, 1,  ENV_NOTE_MATCH, 3, 2},   /* default Zone */
     [P_DRY_MIX]       = {"dry_mix",      "Dry Mix",      T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
     [P_VOLUME]        = {"volume",       "Volume",       T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.8f},
     [P_WIDTH]         = {"width",        "Width",        T_FLOAT,  0,   1, 0.01f, NULL, 0, 1.0f},
@@ -177,6 +177,17 @@ static const char UI_HIERARCHY[] =
 
 /* ── Instance state ─────────────────────────────────────────────────────────── */
 
+#define MAX_NOTES 16
+typedef struct {
+    int    active;          /* in use (held or releasing) */
+    int    held;            /* note currently down */
+    int    note;
+    float  vel;
+    int    amp_stage;       /* per-note amp ADSR (Shape amp params) */
+    float  amp_level;
+    double accum;           /* per-note grain scheduler */
+} note_voice_t;
+
 typedef struct {
     float pv[NPARAMS];      /* live param values (enums/ints stored as float) */
 
@@ -216,9 +227,12 @@ typedef struct {
     /* Output filter (TPT state-variable, per channel) */
     float                svf_ic1[2], svf_ic2[2];
 
-    /* Shape envelopes (gated by note in Notes mode, always-on otherwise) */
+    /* Global envelopes (Map/Mosaic amp; filter env is always global) */
     int                  amp_stage, filt_stage, last_gate;
     float                amp_level, amp_prev, filt_level;
+
+    /* Polyphonic Notes mode: one voice per held pad, each with its own amp env */
+    note_voice_t         notes[MAX_NOTES];
 } concat_t;
 
 static void set_param(void *instance, const char *key, const char *val);   /* fwd */
@@ -368,12 +382,22 @@ static void on_midi(void *instance, const uint8_t *msg, int len, int source) {
     if (len < 3) return;
     uint8_t d1 = msg[1], d2 = msg[2];
 
-    if (status == 0x90 && d2 > 0) {          /* Note On */
-        inst->midi_note   = d1;
-        inst->velocity    = d2 / 127.0f;
-        inst->note_active = 1;
-    } else if (status == 0x80 || (status == 0x90 && d2 == 0)) {  /* Note Off */
-        if (inst->midi_note == d1) { inst->note_active = 0; inst->aftertouch = 0.0f; }
+    if (status == 0x90 && d2 > 0) {          /* Note On — allocate a polyphonic voice */
+        int slot = -1;
+        for (int i = 0; i < MAX_NOTES; i++) if (inst->notes[i].active && inst->notes[i].note == d1) { slot = i; break; }
+        if (slot < 0) for (int i = 0; i < MAX_NOTES; i++) if (!inst->notes[i].active) { slot = i; break; }
+        if (slot < 0) slot = 0;              /* steal voice 0 */
+        note_voice_t *nv = &inst->notes[slot];
+        nv->active = 1; nv->held = 1; nv->note = d1; nv->vel = d2 / 127.0f;
+        nv->amp_stage = 1; nv->amp_level = 0.0f; nv->accum = 0.0;
+        inst->note_active = 1; inst->midi_note = d1; inst->velocity = d2 / 127.0f;
+    } else if (status == 0x80 || (status == 0x90 && d2 == 0)) {  /* Note Off → release the voice */
+        for (int i = 0; i < MAX_NOTES; i++)
+            if (inst->notes[i].active && inst->notes[i].held && inst->notes[i].note == d1) {
+                inst->notes[i].held = 0; inst->notes[i].amp_stage = 4;
+            }
+        int any = 0; for (int i = 0; i < MAX_NOTES; i++) if (inst->notes[i].held) any = 1;
+        inst->note_active = any; inst->aftertouch = 0.0f;
     } else if (status == 0xA0) {             /* Poly aftertouch = pad pressure */
         inst->aftertouch = d2 / 127.0f;
     } else if (status == 0xE0) {             /* Pitch bend → ± transpose */
@@ -382,6 +406,7 @@ static void on_midi(void *instance, const uint8_t *msg, int len, int source) {
     } else if (status == 0xB0 && d1 == 1) {  /* Mod wheel (TODO) */
         inst->mod_wheel = d2 / 127.0f;
     } else if (status == 0xB0 && d1 == 123) {/* All notes off */
+        for (int i = 0; i < MAX_NOTES; i++) if (inst->notes[i].active) { inst->notes[i].held = 0; inst->notes[i].amp_stage = 4; }
         inst->note_active = 0; inst->aftertouch = 0.0f;
     }
 }
@@ -602,32 +627,49 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
         case 1: gp.radius       = clampf(gp.radius + at, 0.0f, 1.0f); break;             /* Proximity */
         case 2: gp.density      = clampf(gp.density + at * 80.0f, 1.0f, 100.0f); break;  /* Density */
         case 5: gp.pitch_semi  += at * 12.0f; break;                                     /* Pitch (+1 oct) */
-        case 6: gp.grain_size_ms = clampf(gp.grain_size_ms + at * 300.0f, 10.0f, 500.0f); break; /* Grain */
+        case 6: gp.grain_size_ms = clampf(gp.grain_size_ms + at * 1000.0f, 10.0f, 2000.0f); break; /* Grain */
         case 7: gp.pitch_jitter = clampf(gp.pitch_jitter + at, 0.0f, 1.0f); break;       /* Jitter */
         default: break;
     }
 
     float t[NDESC], w[NDESC];
     int pm = (int)inst->pv[P_PLAY_MODE];        /* 0 Map, 1 Notes, 2 Mosaic */
-    if (pm == 1) {                              /* Notes: pitch-match + retune each grain to the note */
-        if (inst->note_active) {
-            float note_hz = 440.0f * powf(2.0f, (inst->midi_note - 69) / 12.0f)
+    int nmatch = (int)inst->pv[P_NOTE_MATCH];   /* 0 Off, 1 Pitch, 2 Zone */
+    int any_held = 0;
+
+#define ENVT(v) (0.002f + (v) * (v) * 5.0f)     /* 0..1 knob → 2 ms .. 5 s */
+
+    if (pm == 1) {                              /* Notes: polyphonic — one voice per held pad */
+        for (int i = 0; i < MAX_NOTES; i++) {
+            note_voice_t *nv = &inst->notes[i];
+            if (!nv->active) continue;
+            if (nv->held) any_held = 1;
+            adsr_advance(&nv->amp_stage, &nv->amp_level,
+                         ENVT(inst->pv[P_AMP_ATK]), ENVT(inst->pv[P_AMP_DEC]),
+                         inst->pv[P_AMP_SUS], ENVT(inst->pv[P_AMP_REL]), frames, 44100);
+            if (!nv->held && nv->amp_stage == 0) { nv->active = 0; continue; }  /* released + silent → free */
+
+            float note_hz = 440.0f * powf(2.0f, (nv->note - 69) / 12.0f)
                                    * powf(2.0f, inst->pitch_bend / 12.0f);
+            float target_hz = 0.0f;
             memset(t, 0, sizeof(float) * NDESC);
             memset(w, 0, sizeof(float) * NDESC);
-            if ((int)inst->pv[P_NOTE_MATCH] != 0 && ix->iqr[D_PITCH] > 1e-6f) {   /* Pitch/Zone: select nearest pitch */
-                t[D_PITCH] = (note_hz - ix->median[D_PITCH]) / ix->iqr[D_PITCH];
-                w[D_PITCH] = 1.0f;
-            } else {                             /* Off: keep the Map position, just retune */
+            if (nmatch == 1) {                   /* Pitch: nearest-pitch slice + retune to the note */
+                if (ix->iqr[D_PITCH] > 1e-6f) {
+                    t[D_PITCH] = (note_hz - ix->median[D_PITCH]) / ix->iqr[D_PITCH];
+                    w[D_PITCH] = 1.0f;
+                }
+                target_hz = note_hz;
+            } else if (nmatch == 2) {            /* Zone: note → map X, natural pitch (pads play different parts) */
+                float zx = clampf((nv->note - 36) / 60.0f, 0.0f, 1.0f);
+                query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
+                                 zx, inst->pv[P_Y_POS], t, w);
+            } else {                             /* Off: current map point, retuned chromatically */
                 query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
                                  inst->pv[P_X_POS], inst->pv[P_Y_POS], t, w);
+                target_hz = note_hz;
             }
-            gp.target_hz = note_hz;
-            gp.volume   *= inst->velocity;
-        } else {
-            gp.density = 0.0f;                   /* no note held → spawn none, let grains decay */
-            memset(t, 0, sizeof(float) * NDESC);
-            memset(w, 0, sizeof(float) * NDESC);
+            grain_schedule(&inst->ge, ix, t, w, &gp, nv->amp_level * nv->vel, target_hz, &nv->accum, frames, 44100);
         }
     } else if (pm == 2 && inst->host && inst->mono_analysis) {   /* Mosaic: target from live line/mic input */
         int16_t *ain = (int16_t *)(inst->host->mapped_memory + inst->host->audio_in_offset);
@@ -636,29 +678,25 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
             if (inst->in_fill < ANALYSIS_N) inst->in_frame[inst->in_fill++] = mono;
             if (inst->in_fill >= ANALYSIS_N) { compute_mosaic_target(inst, ix); inst->in_fill = 0; }
         }
-        if (inst->mosaic_ready) {
-            memcpy(t, inst->mosaic_t, sizeof(float) * NDESC);
-            memcpy(w, inst->mosaic_w, sizeof(float) * NDESC);
-        } else {
-            query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
-                             inst->pv[P_X_POS], inst->pv[P_Y_POS], t, w);
-        }
-    } else {                                     /* Map */
+        if (inst->mosaic_ready) { memcpy(t, inst->mosaic_t, sizeof(float) * NDESC); memcpy(w, inst->mosaic_w, sizeof(float) * NDESC); }
+        else query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
+                              inst->pv[P_X_POS], inst->pv[P_Y_POS], t, w);
+        grain_schedule(&inst->ge, ix, t, w, &gp, 1.0f, 0.0f, &inst->ge.sched_accum, frames, 44100);
+    } else {                                     /* Map: X/Y navigation */
         query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
                          inst->pv[P_X_POS], inst->pv[P_Y_POS], t, w);
+        grain_schedule(&inst->ge, ix, t, w, &gp, 1.0f, 0.0f, &inst->ge.sched_accum, frames, 44100);
     }
-    grain_render(&inst->ge, ix, t, w, &gp, out_lr, frames, 44100);
 
-    /* ── Shape envelopes (amp + filter), gated ── */
-#define ENVT(v) (0.002f + (v) * (v) * 5.0f)            /* 0..1 knob → 2 ms .. 5 s */
-    int gate = (pm == 1) ? inst->note_active : 1;      /* Notes: note gates; Map/Mosaic always on */
-    if (gate && !inst->last_gate) { inst->amp_stage = 1; inst->filt_stage = 1; }
-    if (!gate && inst->last_gate) { inst->amp_stage = 4; inst->filt_stage = 4; }
-    inst->last_gate = gate;
-    adsr_advance(&inst->amp_stage,  &inst->amp_level,  ENVT(inst->pv[P_AMP_ATK]),  ENVT(inst->pv[P_AMP_DEC]),  inst->pv[P_AMP_SUS],  ENVT(inst->pv[P_AMP_REL]), frames, 44100);
-    adsr_advance(&inst->filt_stage, &inst->filt_level, ENVT(inst->pv[P_FILT_ATK]), ENVT(inst->pv[P_FILT_DEC]), inst->pv[P_FILT_SUS], ENVT(inst->pv[P_AMP_REL]), frames, 44100);
-    float amp_now = inst->amp_level, amp_prev = inst->amp_prev;
-    inst->amp_prev = amp_now;
+    grain_mix(&inst->ge, &gp, out_lr, frames, 44100);   /* per-note gains already baked into grains */
+
+    /* ── Filter envelope (Shape) — gated by held notes in Notes, else held open ── */
+    int fgate = (pm == 1) ? any_held : 1;
+    if (fgate && !inst->last_gate) inst->filt_stage = 1;
+    if (!fgate && inst->last_gate) inst->filt_stage = 4;
+    inst->last_gate = fgate;
+    adsr_advance(&inst->filt_stage, &inst->filt_level, ENVT(inst->pv[P_FILT_ATK]), ENVT(inst->pv[P_FILT_DEC]),
+                 inst->pv[P_FILT_SUS], ENVT(inst->pv[P_AMP_REL]), frames, 44100);
 #undef ENVT
 
     /* ── DJ filter: one bipolar knob (center bypass, left LP down, right HP up) ── */
@@ -679,9 +717,8 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
     float a1 = 1.0f / (1.0f + g * (g + kf)), a2 = g * a1, a3 = g * a2;
     float drive = 1.0f + sat * 3.0f, makeup = 1.0f / drive;
     for (int i = 0; i < frames; i++) {
-        float ampg = amp_prev + (amp_now - amp_prev) * ((float)i / frames);   /* per-sample declick */
         for (int ch = 0; ch < 2; ch++) {
-            float x = out_lr[i * 2 + ch] * (1.0f / 32768.0f) * ampg;
+            float x = out_lr[i * 2 + ch] * (1.0f / 32768.0f);
             if (fmode != 0) {
                 float v3 = x - inst->svf_ic2[ch];
                 float v1 = a1 * inst->svf_ic1[ch] + a2 * v3;

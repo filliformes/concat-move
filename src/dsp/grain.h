@@ -23,6 +23,7 @@ typedef struct {
     int            grain_len;  /* grain length (output samples) */
     int            age;        /* samples elapsed */
     float          panl, panr;
+    float          gain;       /* per-grain gain (carries the note-voice's envelope level) */
     int            reverse;
 } grain_t;
 
@@ -47,10 +48,14 @@ typedef struct {
 
 void grain_engine_init(grain_engine_t *ge);
 
-/* Render one block. `ix` may be NULL (→ silence). `target`/`weight` are the query
- * target (from query_target_map / query_target_full). out_lr = stereo int16, `frames`. */
-void grain_render(grain_engine_t *ge, corpus_index_t *ix,
-                  const float *target, const float *weight,
-                  const grain_params_t *gp, int16_t *out_lr, int frames, int sr);
+/* Schedule grains for ONE voice/target into the shared grain pool. `accum` is that
+ * voice's fractional grain scheduler; `gain` scales its grains (a note-voice passes
+ * its envelope level); `target_hz` > 0 retunes each grain to that pitch. */
+void grain_schedule(grain_engine_t *ge, corpus_index_t *ix,
+                    const float *target, const float *weight, const grain_params_t *gp,
+                    float gain, float target_hz, double *accum, int frames, int sr);
+
+/* Render every active grain into out_lr (grain loops its slice; applies width + volume). */
+void grain_mix(grain_engine_t *ge, const grain_params_t *gp, int16_t *out_lr, int frames, int sr);
 
 #endif /* CONCAT_GRAIN_H */
