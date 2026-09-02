@@ -24,6 +24,7 @@
           "params": [
             "corpus_file", "pool_mb", "rescan", "slice_mode", "min_slice_ms", "max_slice_ms", "analyze", "silence_gate",
             {"level": "map", "label": "Map"},
+            {"level": "mod", "label": "Mod"},
             {"level": "grain", "label": "Grain"},
             {"level": "shape", "label": "Shape"},
             {"level": "play", "label": "Play"},
@@ -32,8 +33,13 @@
         },
         "map": {
           "name": "Map",
-          "knobs": ["x_desc", "y_desc", "x_pos", "y_pos", "radius", "follow", "lfo_rate", "lfo_shape"],
-          "params": ["x_desc", "y_desc", "x_pos", "y_pos", "radius", "k_nearest", "follow", "lfo_rate", "lfo_shape", "repeat_avoid"]
+          "knobs": ["x_desc", "y_desc", "x_pos", "y_pos", "radius", "k_nearest", "repeat_avoid"],
+          "params": ["x_desc", "y_desc", "x_pos", "y_pos", "radius", "k_nearest", "repeat_avoid"]
+        },
+        "mod": {
+          "name": "Mod",
+          "knobs": ["follow", "lfo_rate", "lfo_shape"],
+          "params": ["follow", "lfo_rate", "lfo_shape"]
         },
         "grain": {
           "name": "Grain",
