@@ -33,8 +33,8 @@
         },
         "map": {
           "name": "Map",
-          "knobs": ["map_mode", "x_desc", "y_desc", "x_pos", "y_pos", "radius", "k_nearest", "repeat_avoid"],
-          "params": ["map_mode", "x_desc", "y_desc", "x_pos", "y_pos", "radius", "k_nearest", "repeat_avoid"]
+          "knobs": ["x_desc", "y_desc", "x_pos", "y_pos", "map_mode", "radius", "k_nearest", "repeat_avoid"],
+          "params": ["x_desc", "y_desc", "x_pos", "y_pos", "map_mode", "radius", "k_nearest", "repeat_avoid"]
         },
         "mod": {
           "name": "Mod",
@@ -96,10 +96,21 @@
       {"key": "volume", "name": "Volume", "type": "float", "min": 0, "max": 1, "default": 0.8, "step": 0.01},
       {"key": "width", "name": "Width", "type": "float", "min": 0, "max": 1, "default": 1.0, "step": 0.01},
       {"key": "sat", "name": "Saturation", "type": "float", "min": 0, "max": 1, "default": 0, "step": 0.01},
-      {"key": "cutoff", "name": "Cutoff", "type": "float", "min": 0, "max": 1, "default": 1.0, "step": 0.01},
+      {"key": "cutoff", "name": "Filter", "type": "float", "min": 0, "max": 1, "default": 0.5, "step": 0.01},
       {"key": "resonance", "name": "Resonance", "type": "float", "min": 0, "max": 1, "default": 0, "step": 0.01},
       {"key": "pressure", "name": "Pressure", "type": "enum", "options": ["Off", "Proximity", "Density", "Bright", "Sat", "Pitch", "Grain", "Jitter"]},
-      {"key": "press_amt", "name": "Press Amt", "type": "float", "min": 0, "max": 1, "default": 1.0, "step": 0.01}
+      {"key": "press_amt", "name": "Press Amt", "type": "float", "min": 0, "max": 1, "default": 1.0, "step": 0.01},
+      {"key": "vel_amt", "name": "Vel Amount", "type": "float", "min": 0, "max": 1, "default": 1.0, "step": 0.01},
+      {"key": "poly", "name": "Polyphony", "type": "int", "min": 1, "max": 128, "default": 48},
+      {"key": "grain_rand", "name": "Grain Rand", "type": "float", "min": 0, "max": 1, "default": 0, "step": 0.01},
+      {"key": "amp_atk", "name": "Amp Atk", "type": "float", "min": 0, "max": 1, "default": 0.01, "step": 0.01},
+      {"key": "amp_dec", "name": "Amp Dec", "type": "float", "min": 0, "max": 1, "default": 0.2, "step": 0.01},
+      {"key": "amp_sus", "name": "Amp Sus", "type": "float", "min": 0, "max": 1, "default": 1.0, "step": 0.01},
+      {"key": "amp_rel", "name": "Amp Rel", "type": "float", "min": 0, "max": 1, "default": 0.2, "step": 0.01},
+      {"key": "filt_amt", "name": "Filt Env", "type": "float", "min": 0, "max": 1, "default": 0.5, "step": 0.01},
+      {"key": "filt_atk", "name": "Filt Atk", "type": "float", "min": 0, "max": 1, "default": 0.01, "step": 0.01},
+      {"key": "filt_dec", "name": "Filt Dec", "type": "float", "min": 0, "max": 1, "default": 0.3, "step": 0.01},
+      {"key": "filt_sus", "name": "Filt Sus", "type": "float", "min": 0, "max": 1, "default": 0, "step": 0.01}
     ]
   }
 }

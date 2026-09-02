@@ -172,7 +172,7 @@ static const pdef_t PARAMS[NPARAMS] = {
 static const char UI_HIERARCHY[] =
 "{\"modes\":null,\"levels\":{"
 "\"root\":{\"name\":\"Concat\",\"knobs\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"],\"params\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\",{\"level\":\"map\",\"label\":\"Map\"},{\"level\":\"mod\",\"label\":\"Mod\"},{\"level\":\"grain\",\"label\":\"Grain\"},{\"level\":\"shape\",\"label\":\"Shape\"},{\"level\":\"play\",\"label\":\"Play\"},{\"level\":\"out\",\"label\":\"Out\"}]},"
-"\"map\":{\"name\":\"Map\",\"knobs\":[\"map_mode\",\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"radius\",\"k_nearest\",\"repeat_avoid\"],\"params\":[\"map_mode\",\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"radius\",\"k_nearest\",\"repeat_avoid\"]},"
+"\"map\":{\"name\":\"Map\",\"knobs\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"map_mode\",\"radius\",\"k_nearest\",\"repeat_avoid\"],\"params\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"map_mode\",\"radius\",\"k_nearest\",\"repeat_avoid\"]},"
 "\"mod\":{\"name\":\"Mod\",\"knobs\":[\"follow\",\"lfo_rate\",\"lfo_shape\"],\"params\":[\"follow\",\"lfo_rate\",\"lfo_shape\"]},"
 "\"grain\":{\"name\":\"Grain\",\"knobs\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pan_spread\",\"grain_rand\",\"reverse\",\"pitch_jitter\"],\"params\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pan_spread\",\"grain_rand\",\"reverse\",\"pitch_jitter\"]},"
 "\"shape\":{\"name\":\"Shape\",\"knobs\":[\"amp_atk\",\"amp_dec\",\"amp_sus\",\"amp_rel\",\"filt_amt\",\"filt_atk\",\"filt_dec\",\"filt_sus\"],\"params\":[\"amp_atk\",\"amp_dec\",\"amp_sus\",\"amp_rel\",\"filt_amt\",\"filt_atk\",\"filt_dec\",\"filt_sus\"]},"
@@ -513,37 +513,13 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
     concat_t *inst = (concat_t *)instance;
     if (!inst || !key) return -1;
 
-    /* Serve chain_params from the DSP (granny/breakbeat pattern) — the module.json
-     * fallback does not reliably deliver param metadata to the knob grid, so a knob
-     * with no metadata renders as a float 0..1. corpus_file is declared filepath here
-     * so the grid draws it as a browser cell, not a float knob. (~2.7 KB < buffer.) */
-    if (strcmp(key, "chain_params") == 0) {
-        int n = 0;
-#define CP_EMIT(...) do { if (n < buf_len) n += snprintf(buf + n, buf_len - n, __VA_ARGS__); } while (0)
-        CP_EMIT("[{\"key\":\"corpus_file\",\"name\":\"Source\",\"type\":\"filepath\","
-                "\"root\":\"/data/UserData/UserLibrary\",\"filter\":[\".wav\",\".flac\",\".mp3\"]}");
-        for (int i = 0; i < NPARAMS; i++) {
-            const pdef_t *p = &PARAMS[i];
-            CP_EMIT(",{\"key\":\"%s\",\"name\":\"%s\",", p->key, p->label);
-            if (p->type == T_ENUM) {
-                CP_EMIT("\"type\":\"enum\",\"options\":[");
-                for (int j = 0; j < p->nopts; j++) CP_EMIT("%s\"%s\"", j ? "," : "", p->opts[j]);
-                CP_EMIT("]}");
-            } else if (p->type == T_INT) {
-                CP_EMIT("\"type\":\"int\",\"min\":%d,\"max\":%d", (int)p->min, (int)p->max);
-                if (p->unit) CP_EMIT(",\"unit\":\"%s\"", p->unit);
-                CP_EMIT("}");
-            } else {
-                CP_EMIT("\"type\":\"float\",\"min\":%g,\"max\":%g,\"step\":%g",
-                        (double)p->min, (double)p->max, (double)p->step);
-                if (p->unit) CP_EMIT(",\"unit\":\"%s\"", p->unit);
-                CP_EMIT("}");
-            }
-        }
-        CP_EMIT("]");
-#undef CP_EMIT
-        return (n >= buf_len) ? (buf_len - 1) : n;
-    }
+    /* chain_params: return -1 so the host reads them from module.json instead. The
+     * DSP-served path is capped by the ~4 KB shim buffer (we were at 4065 B / 47
+     * params — one param from truncation); module.json is file-parsed with no such
+     * limit (host cap 256 params, v0.9.0+). module.json's chain_params is the single
+     * source of truth and MUST stay complete + in sync with the param table.
+     * NOTE: module.json is cached at startup — a POWER-CYCLE is required to reload it. */
+    if (strcmp(key, "chain_params") == 0) return -1;
 
     /* Sound generators MUST return ui_hierarchy from get_param. */
     if (strcmp(key, "ui_hierarchy") == 0) {
