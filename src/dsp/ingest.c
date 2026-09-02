@@ -117,7 +117,9 @@ static float *resample_mono(const float *in, int in_len, int in_sr, int out_sr, 
         *out_len = o ? in_len : 0; return o;
     }
     double ratio = (double)out_sr / in_sr;
-    int n = (int)(in_len * ratio);
+    double nd = (double)in_len * ratio;
+    if (nd > 2.0e9) nd = 2.0e9;         /* guard the int cast against overflow */
+    int n = (int)nd;
     if (n < 1) n = 1;
     float *o = (float *)malloc((size_t)n * sizeof(float));
     if (!o) { *out_len = 0; return NULL; }
@@ -137,8 +139,14 @@ static float *resample_mono(const float *in, int in_len, int in_sr, int out_sr, 
     *out_len = n; return o;
 }
 
+/* Skip files too large to decode safely on-device: dr_libs loads the whole file to
+ * f32 RAM before our pool cap applies, so a huge file could OOM the analyst. */
+#define INGEST_MAX_BYTES (128u * 1024 * 1024)
+
 float *ingest_decode(const char *path, int target_sr, int *out_len) {
     *out_len = 0;
+    struct stat st;
+    if (stat(path, &st) == 0 && (unsigned long long)st.st_size > INGEST_MAX_BYTES) return NULL;
     const char *ext = strrchr(path, '.');
     unsigned int ch = 0, sr = 0;
     drwav_uint64 frames = 0;
@@ -157,6 +165,7 @@ float *ingest_decode(const char *path, int target_sr, int *out_len) {
         pcm = drwav_open_file_and_read_pcm_frames_f32(path, &ch, &sr, &frames, NULL);
     }
     if (!pcm || frames == 0 || ch == 0 || sr == 0) { free(pcm); return NULL; }
+    if (frames > 0x7fffffffULL) { free(pcm); return NULL; }   /* guard the int cast below */
 
     int nf = (int)frames;
     float *mono = (float *)malloc((size_t)nf * sizeof(float));

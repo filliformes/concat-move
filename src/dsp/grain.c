@@ -80,14 +80,17 @@ static void spawn_grain(grain_engine_t *ge, corpus_index_t *ix,
     int sel = query_select(&ix->query, target, weight, gp->k_nearest, gp->radius);
     if (sel < 0 || sel >= ix->nslices) return;
 
-    /* Pick a free voice within the polyphony cap, else steal the oldest. */
+    /* Pick a free voice within the polyphony cap, else steal the grain NEAREST ITS END
+     * (smallest samples-remaining) — it is already inside its window's fade, so cutting
+     * it is far quieter than stealing the oldest-started grain mid-window. */
     int nv = gp->max_voices; if (nv < 1) nv = 1; if (nv > GRAIN_VOICES) nv = GRAIN_VOICES;
-    int vi = -1, oldest = -1, oldest_age = -1;
+    int vi = -1, steal = 0, min_rem = 0x7fffffff;
     for (int v = 0; v < nv; v++) {
         if (!ge->voices[v].active) { vi = v; break; }
-        if (ge->voices[v].age > oldest_age) { oldest_age = ge->voices[v].age; oldest = v; }
+        int rem = ge->voices[v].grain_len - ge->voices[v].age;
+        if (rem < min_rem) { min_rem = rem; steal = v; }
     }
-    if (vi < 0) vi = oldest;
+    if (vi < 0) vi = steal;
     grain_t *g = &ge->voices[vi];
 
     const cslice_t *sl = &ix->slices[sel];
@@ -117,6 +120,7 @@ static void spawn_grain(grain_engine_t *ge, corpus_index_t *ix,
     g->rate = powf(2.0f, gp->pitch_semi / 12.0f) * jit;
     if (target_hz > 0.0f && sl->pitch > 0.0f) g->rate *= target_hz / sl->pitch;   /* Pitch mode: retune to the note */
     if (g->rate < 0.01f) g->rate = 0.01f;
+    if (g->rate > 32.0f) g->rate = 32.0f;   /* cap at +5 oct: bounds the read step + wrap cost */
 
     g->reverse = (g_rand(ge) < gp->reverse_prob) ? 1 : 0;
     g->pos = g->reverse ? (double)(period - 1) : 0.0;
@@ -151,7 +155,7 @@ void grain_mix(grain_engine_t *ge, const grain_params_t *gp, int16_t *out_lr, in
             int len = g->len, xf = g->xfade, period = len - xf;   /* loop period (== len when xf==0) */
             double p = g->pos;
 
-            int ip = (int)p; if (ip >= len) ip -= len;
+            int ip = (int)p % len; if (ip < 0) ip += len;   /* modulo-safe even if pos ran past len */
             int ip1 = ip + 1; if (ip1 >= len) ip1 -= len;
             float frac = (float)(p - floor(p));
             float samp = g->audio[ip] * (1.0f / 32768.0f)
@@ -172,14 +176,14 @@ void grain_mix(grain_engine_t *ge, const grain_params_t *gp, int16_t *out_lr, in
             /* Guaranteed edge declick: force a true-zero fade in/out for every window
              * (Gaussian/Expodec/etc. don't reach 0 at their ends → they'd click otherwise). */
             const int decl = 32;   /* ~0.7 ms */
-            if (g->age < decl)                        env *= (float)g->age / decl;
-            else if (g->age >= g->grain_len - decl)   env *= (float)(g->grain_len - g->age) / decl;
+            if (g->age < decl)                          env *= (float)g->age / decl;
+            else if (g->age >= g->grain_len - decl)     env *= (float)(g->grain_len - 1 - g->age) / decl;  /* → 0 on the last sample */
             samp *= env * g->gain;
             l += samp * g->panl;
             r += samp * g->panr;
             g->pos += g->reverse ? -g->rate : g->rate;
-            if (g->pos >= period) g->pos -= period;
-            if (g->pos < 0)       g->pos += period;
+            while (g->pos >= period) g->pos -= period;   /* while: safe when rate > period */
+            while (g->pos < 0)       g->pos += period;
             g->age++;
             if (g->age >= g->grain_len) g->active = 0;
         }

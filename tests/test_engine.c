@@ -59,16 +59,30 @@ int main(void) {
     gp.k_nearest = 4; gp.radius = 0.3f; gp.density = 30.0f; gp.grain_size_ms = 120.0f;
     gp.grain_env = 0; gp.pitch_semi = 0.0f; gp.pitch_jitter = 0.0f;
     gp.pan_spread = 0.3f; gp.reverse_prob = 0.0f; gp.volume = 0.8f; gp.width = 1.0f;
+    gp.grain_rand = 0.0f; gp.max_voices = 24;
     query_target_map(&ix->query, D_CENTROID_MEAN, D_PITCH, 0.5f, 0.5f, t, w);
     int16_t out[128 * 2];
     int peak = 0; long nz = 0;
     for (int b = 0; b < 200; b++) {
-        grain_render(&ge, ix, t, w, &gp, out, 128, 44100);
+        grain_schedule(&ge, ix, t, w, &gp, 1.0f, 0.0f, &ge.sched_accum, 128, 44100);
+        grain_mix(&ge, &gp, out, 128, 44100);
         for (int s = 0; s < 256; s++) { int v = out[s] < 0 ? -out[s] : out[s]; if (v > peak) peak = v; if (v) nz++; }
     }
     snprintf(buf, sizeof(buf), "peak=%d, %ld/%d nonzero samples", peak, nz, 200 * 256);
     check("grain engine produces audio", peak > 100, buf);
     check("grain output within int16", peak <= 32767, NULL);
+
+    /* Regression (#1): extreme transpose + reverse must not read past a slice.
+     * Pre-fix this walked the read index out of bounds; completing without a
+     * segfault (and staying in range) is the guard. */
+    gp.pitch_semi = 48.0f; gp.reverse_prob = 1.0f; grain_engine_init(&ge);
+    int peak2 = 0;
+    for (int b = 0; b < 300; b++) {
+        grain_schedule(&ge, ix, t, w, &gp, 1.0f, 0.0f, &ge.sched_accum, 128, 44100);
+        grain_mix(&ge, &gp, out, 128, 44100);
+        for (int s = 0; s < 256; s++) { int v = out[s] < 0 ? -out[s] : out[s]; if (v > peak2) peak2 = v; }
+    }
+    check("high-transpose grains stay in bounds", peak2 <= 32767, NULL);
 
     corpus_index_free(ix);
     printf("\n%d passed, %d failed\n", npass, nfail);

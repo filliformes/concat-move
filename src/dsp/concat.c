@@ -291,6 +291,7 @@ static void arm_analyst(concat_t *inst) {
     inst->a_slice_mode = (int)inst->pv[P_SLICE_MODE];
     inst->a_min_len = (int)(inst->pv[P_MIN_SLICE] * 44.1f);
     inst->a_max_len = (int)(inst->pv[P_MAX_SLICE] * 44.1f);
+    if (inst->a_min_len > inst->a_max_len) inst->a_min_len = inst->a_max_len;   /* guard degenerate slicing */
     inst->a_sil = inst->pv[P_SILENCE_GATE];
     long pool_mb = (long)inst->pv[P_POOL_MB];
     long avail = mem_available_mb();                 /* OOM guard: leave a 350 MB reserve */
@@ -617,7 +618,7 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
     gp.grain_rand   = inst->pv[P_GRAIN_RAND];
     gp.max_voices   = (int)inst->pv[P_POLY];
 
-    /* Pad pressure (aftertouch) → chosen destination (Invert flips the sign).
+    /* Pad pressure (aftertouch) → chosen destination.
      * Grain-domain destinations here; Bright/Sat applied in the post chain below. */
     float at   = inst->aftertouch * inst->pv[P_PRESS_AMT];
     int   pdst = (int)inst->pv[P_PRESSURE];

@@ -32,7 +32,8 @@ void concat_slice_descriptor(analysis_t *a, const float *slice, int len, float *
     if (!frame || !mag || !pitches) { free(frame); free(mag); free(pitches); return; }
 
     rstat_t s_mfcc[13], s_cent, s_flat, s_zcr, s_loud, s_conf;
-    for (int i = 0; i < a->n_mfcc; i++) rstat_init(&s_mfcc[i]);
+    int nmfcc = a->n_mfcc; if (nmfcc > 13) nmfcc = 13;   /* s_mfcc[] + NDESC layout fix 13 MFCCs */
+    for (int i = 0; i < nmfcc; i++) rstat_init(&s_mfcc[i]);
     rstat_init(&s_cent); rstat_init(&s_flat); rstat_init(&s_zcr);
     rstat_init(&s_loud); rstat_init(&s_conf);
     float peak = 0.0f; int npitch = 0, nframes = 0;
@@ -46,7 +47,7 @@ void concat_slice_descriptor(analysis_t *a, const float *slice, int len, float *
 
         analysis_magnitude(a, frame, mag);
         analysis_mfcc(a, mag, mfcc);
-        for (int i = 0; i < a->n_mfcc; i++) rstat_add(&s_mfcc[i], mfcc[i]);
+        for (int i = 0; i < nmfcc; i++) rstat_add(&s_mfcc[i], mfcc[i]);
         rstat_add(&s_cent, analysis_centroid(a, mag));
         rstat_add(&s_flat, analysis_flatness(a, mag));
         rstat_add(&s_zcr,  analysis_zcr(&slice[p], copy));
@@ -61,7 +62,7 @@ void concat_slice_descriptor(analysis_t *a, const float *slice, int len, float *
         if (copy < N) break;                             /* last (partial) frame */
     }
 
-    for (int i = 0; i < a->n_mfcc; i++) {
+    for (int i = 0; i < nmfcc; i++) {
         out[D_MFCC0_MEAN + i] = rstat_mean(&s_mfcc[i]);
         out[D_MFCC0_STD  + i] = rstat_std(&s_mfcc[i]);
     }
