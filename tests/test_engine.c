@@ -92,6 +92,21 @@ int main(void) {
     { char kb[64]; snprintf(kb, sizeof(kb), "kclusters=%d", ix->kclusters);
       check("k-means clusters built", ix->kclusters > 0 && ix->centroids != NULL, kb); }
 
+    /* PCA learned map: top-2 axes should be unit-length, ~orthogonal, and span a range. */
+    check("pca: learned map built", ix->pca_ok == 1, NULL);
+    if (ix->pca_ok) {
+        double n1 = 0, n2 = 0, dot = 0;
+        for (int j = 0; j < NDESC; j++) {
+            n1 += (double)ix->pca_axis[0][j] * ix->pca_axis[0][j];
+            n2 += (double)ix->pca_axis[1][j] * ix->pca_axis[1][j];
+            dot += (double)ix->pca_axis[0][j] * ix->pca_axis[1][j];
+        }
+        char pb[128]; snprintf(pb, sizeof(pb), "|v1|=%.3f |v2|=%.3f v1.v2=%.3f range x=[%.2f,%.2f]",
+                               sqrt(n1), sqrt(n2), dot, ix->pca_min[0], ix->pca_max[0]);
+        check("pca: axes orthonormal", fabs(sqrt(n1) - 1) < 0.02 && fabs(sqrt(n2) - 1) < 0.02 && fabs(dot) < 0.05, pb);
+        check("pca: axes span a range", ix->pca_max[0] > ix->pca_min[0] && ix->pca_max[1] > ix->pca_min[1], NULL);
+    }
+
     /* OOM eviction: a small (overflowing) pool must build, respect the cap, and
      * still cover the corpus (descriptor range not collapsed to the first files). */
     int pq = 0;
@@ -131,6 +146,7 @@ int main(void) {
         check("cache pool bytes identical", same, NULL);
         check("cache load faster than analysis", t_load < t_build, NULL);
         check("cache preserves k-means clusters", c2->kclusters == c1->kclusters && c1->kclusters > 0, NULL);
+        check("cache preserves PCA map", c2->pca_ok == c1->pca_ok && (!c1->pca_ok || fabs(c1->pca_axis[0][0] - c2->pca_axis[0][0]) < 1e-6), NULL);
     }
     corpus_index_free(c1); corpus_index_free(c2);
     printf("\n%d passed, %d failed\n", npass, nfail);

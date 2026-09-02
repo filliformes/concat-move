@@ -27,6 +27,10 @@ typedef struct {
     query_t   query;       /* bound to qn */
     int       kclusters;   /* k-means clusters over qn (pad-jump targets); 0 if none */
     float    *centroids;   /* [kclusters*NDESC] cluster centres in query space */
+    int       pca_ok;      /* learned 2-D map (PCA) available */
+    float     pca_mean[NDESC];      /* descriptor-space mean */
+    float     pca_axis[2][NDESC];   /* top-2 principal axes (unit vectors) */
+    float     pca_min[2], pca_max[2];  /* projection range, for 0..1 nav mapping */
 } corpus_index_t;
 
 /* Build an index+pool from every audio file in `folder`.

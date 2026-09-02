@@ -69,7 +69,7 @@ enum {
     /* Corpus */
     P_POOL_MB, P_RESCAN, P_SLICE_MODE, P_MIN_SLICE, P_MAX_SLICE, P_ANALYZE, P_SILENCE_GATE,
     /* Map */
-    P_X_DESC, P_Y_DESC, P_X_POS, P_Y_POS, P_RADIUS, P_K_NEAREST, P_FOLLOW, P_REPEAT_AVOID, P_LFO_RATE, P_LFO_SHAPE,
+    P_MAP_MODE, P_X_DESC, P_Y_DESC, P_X_POS, P_Y_POS, P_RADIUS, P_K_NEAREST, P_FOLLOW, P_REPEAT_AVOID, P_LFO_RATE, P_LFO_SHAPE,
     /* Grain */
     P_DENSITY, P_GRAIN_SIZE, P_GRAIN_ENV, P_PITCH, P_PITCH_JITTER, P_PAN_SPREAD, P_REVERSE, P_GRAIN_RAND,
     /* Play / Out */
@@ -92,6 +92,7 @@ static const char *ENV_GRAIN[]      = {"Hann", "Tukey", "Tri", "Gauss", "Expo", 
 static const char *ENV_PLAY_MODE[]  = {"Map", "Notes", "Mosaic"};
 static const char *ENV_PRESSURE[]   = {"Off", "Proximity", "Density", "Bright", "Sat", "Pitch", "Grain", "Jitter"};
 static const char *ENV_LFO_SHAPE[]  = {"Circle", "SineX", "SineY", "S&H"};
+static const char *ENV_MAP_MODE[]   = {"Raw", "Learned"};
 static const char *ENV_NOTE_MATCH[] = {"Off", "Pitch", "Zone"};
 
 typedef struct {
@@ -115,6 +116,7 @@ static const pdef_t PARAMS[NPARAMS] = {
     [P_ANALYZE]       = {"analyze",      "Analyze",      T_INT,    0, 100, 1,  NULL, 0, 0},
     [P_SILENCE_GATE]  = {"silence_gate", "Silence Gate", T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.02f},
     /* Map */
+    [P_MAP_MODE]      = {"map_mode",     "Map Mode",     T_ENUM,   0,   1, 1,  ENV_MAP_MODE, 2, 0},   /* Raw axes / Learned PCA */
     [P_X_DESC]        = {"x_desc",       "X Descriptor", T_ENUM,   0,   7, 1,  ENV_DESC, 8, 0},
     [P_Y_DESC]        = {"y_desc",       "Y Descriptor", T_ENUM,   0,   7, 1,  ENV_DESC, 8, 1},
     [P_X_POS]         = {"x_pos",        "X Position",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.5f},
@@ -170,7 +172,7 @@ static const pdef_t PARAMS[NPARAMS] = {
 static const char UI_HIERARCHY[] =
 "{\"modes\":null,\"levels\":{"
 "\"root\":{\"name\":\"Concat\",\"knobs\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"],\"params\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\",{\"level\":\"map\",\"label\":\"Map\"},{\"level\":\"mod\",\"label\":\"Mod\"},{\"level\":\"grain\",\"label\":\"Grain\"},{\"level\":\"shape\",\"label\":\"Shape\"},{\"level\":\"play\",\"label\":\"Play\"},{\"level\":\"out\",\"label\":\"Out\"}]},"
-"\"map\":{\"name\":\"Map\",\"knobs\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"radius\",\"k_nearest\",\"repeat_avoid\"],\"params\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"radius\",\"k_nearest\",\"repeat_avoid\"]},"
+"\"map\":{\"name\":\"Map\",\"knobs\":[\"map_mode\",\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"radius\",\"k_nearest\",\"repeat_avoid\"],\"params\":[\"map_mode\",\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"radius\",\"k_nearest\",\"repeat_avoid\"]},"
 "\"mod\":{\"name\":\"Mod\",\"knobs\":[\"follow\",\"lfo_rate\",\"lfo_shape\"],\"params\":[\"follow\",\"lfo_rate\",\"lfo_shape\"]},"
 "\"grain\":{\"name\":\"Grain\",\"knobs\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pan_spread\",\"grain_rand\",\"reverse\",\"pitch_jitter\"],\"params\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pan_spread\",\"grain_rand\",\"reverse\",\"pitch_jitter\"]},"
 "\"shape\":{\"name\":\"Shape\",\"knobs\":[\"amp_atk\",\"amp_dec\",\"amp_sus\",\"amp_rel\",\"filt_amt\",\"filt_atk\",\"filt_dec\",\"filt_sus\"],\"params\":[\"amp_atk\",\"amp_dec\",\"amp_sus\",\"amp_rel\",\"filt_amt\",\"filt_atk\",\"filt_dec\",\"filt_sus\"]},"
@@ -557,10 +559,10 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
     if (strcmp(key, "analyze") == 0) return snprintf(buf, buf_len, "%d", inst->progress);  /* live 0..100 */
     if (strcmp(key, "_dbg") == 0) {   /* debug introspection */
         corpus_index_t *ix = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE);
-        return snprintf(buf, buf_len, "started=%d arm=%d prog=%d idx=%d nslices=%d pool=%d kclusters=%d spb=%d path=[%s]",
+        return snprintf(buf, buf_len, "started=%d arm=%d prog=%d idx=%d nslices=%d pool=%d kclusters=%d pca=%d spb=%d path=[%s]",
                         inst->analyst_started, inst->arm, inst->progress,
                         ix != NULL, ix ? ix->nslices : -1, ix ? ix->pool_len : -1,
-                        ix ? ix->kclusters : -1, (int)inst->samples_per_beat, inst->corpus_path);
+                        ix ? ix->kclusters : -1, ix ? ix->pca_ok : -1, (int)inst->samples_per_beat, inst->corpus_path);
     }
 
     /* State serialize: one key=value line per persistent param. */
@@ -636,6 +638,19 @@ static void adsr_advance(int *stage, float *lvl, float atk, float dec, float sus
     }
 }
 
+/* Learned map: reconstruct a descriptor-space target from the 2 PCA axes at (xp,yp). */
+static void pca_target(const corpus_index_t *ix, float xp, float yp, float *t, float *w) {
+    float px = ix->pca_min[0] + xp * (ix->pca_max[0] - ix->pca_min[0]);
+    float py = ix->pca_min[1] + yp * (ix->pca_max[1] - ix->pca_min[1]);
+    for (int j = 0; j < NDESC; j++) { t[j] = ix->pca_mean[j] + px * ix->pca_axis[0][j] + py * ix->pca_axis[1][j]; w[j] = 1.0f; }
+}
+
+/* Build the query target at nav position (xp,yp): learned PCA plane or raw X/Y descriptors. */
+static void nav_target(concat_t *inst, corpus_index_t *ix, int learned, float xp, float yp, float *t, float *w) {
+    if (learned) pca_target(ix, xp, yp, t, w);
+    else query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]), xp, yp, t, w);
+}
+
 static void render_block(void *instance, int16_t *out_lr, int frames) {
     concat_t *inst = (concat_t *)instance;
     inst->global_samples += (uint64_t)frames;      /* drives MIDI-clock beat timing */
@@ -677,6 +692,7 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
     float t[NDESC], w[NDESC];
     int pm = (int)inst->pv[P_PLAY_MODE];        /* 0 Map, 1 Notes, 2 Mosaic */
     int nmatch = (int)inst->pv[P_NOTE_MATCH];   /* 0 Off, 1 Pitch, 2 Zone */
+    int learned = (int)inst->pv[P_MAP_MODE] == 1 && ix->pca_ok;   /* Learned PCA nav axes */
     int any_held = 0;
     int16_t *dry_in = NULL;                     /* live input for Dry Mix (Mosaic only) */
 
@@ -732,11 +748,9 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
                 target_hz = note_hz;
             } else if (nmatch == 2) {            /* Zone: note → map X, natural pitch (pads play different parts) */
                 float zx = clampf((nv->note - 36) / 60.0f, 0.0f, 1.0f);
-                query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
-                                 zx, ypos, t, w);
+                nav_target(inst, ix, learned, zx, ypos, t, w);
             } else {                             /* Off: current map point, retuned chromatically */
-                query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
-                                 xpos, ypos, t, w);
+                nav_target(inst, ix, learned, xpos, ypos, t, w);
                 target_hz = note_hz;
             }
             /* Velocity Amount: 0 = velocity ignored (always full), 1 = velocity fully scales gain.
@@ -754,8 +768,7 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
             if (inst->in_fill >= ANALYSIS_N) { compute_mosaic_target(inst, ix); inst->in_fill = 0; }
         }
         if (inst->mosaic_ready) { memcpy(t, inst->mosaic_t, sizeof(float) * NDESC); memcpy(w, inst->mosaic_w, sizeof(float) * NDESC); }
-        else query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
-                              xpos, ypos, t, w);
+        else nav_target(inst, ix, learned, xpos, ypos, t, w);
         grain_schedule(&inst->ge, ix, t, w, &gp, 1.0f, NULL, 0.0f, &inst->ge.sched_accum, frames, 44100);
     } else {                                     /* Map: X/Y navigation, or pad → k-means cluster jump */
         if (inst->pads_held > 0 && ix->kclusters > 0) {
@@ -763,8 +776,7 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
             const float *cen = &ix->centroids[c * NDESC];
             for (int j = 0; j < NDESC; j++) { t[j] = cen[j]; w[j] = 1.0f; }   /* full-space nearest to cluster centre */
         } else {
-            query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
-                             xpos, ypos, t, w);
+            nav_target(inst, ix, learned, xpos, ypos, t, w);
         }
         grain_schedule(&inst->ge, ix, t, w, &gp, 1.0f, NULL, 0.0f, &inst->ge.sched_accum, frames, 44100);
     }

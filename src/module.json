@@ -33,8 +33,8 @@
         },
         "map": {
           "name": "Map",
-          "knobs": ["x_desc", "y_desc", "x_pos", "y_pos", "radius", "k_nearest", "repeat_avoid"],
-          "params": ["x_desc", "y_desc", "x_pos", "y_pos", "radius", "k_nearest", "repeat_avoid"]
+          "knobs": ["map_mode", "x_desc", "y_desc", "x_pos", "y_pos", "radius", "k_nearest", "repeat_avoid"],
+          "params": ["map_mode", "x_desc", "y_desc", "x_pos", "y_pos", "radius", "k_nearest", "repeat_avoid"]
         },
         "mod": {
           "name": "Mod",
@@ -72,6 +72,7 @@
       {"key": "max_slice_ms", "name": "Max Slice", "type": "float", "min": 100, "max": 2000, "default": 400, "step": 10, "unit": "ms", "display_format": "%.0f"},
       {"key": "analyze", "name": "Analyze", "type": "int", "min": 0, "max": 100, "default": 0, "unit": "%"},
       {"key": "silence_gate", "name": "Silence Gate", "type": "float", "min": 0, "max": 1, "default": 0.02, "step": 0.01},
+      {"key": "map_mode", "name": "Map Mode", "type": "enum", "options": ["Raw", "Learned"]},
       {"key": "x_desc", "name": "X Descriptor", "type": "enum", "options": ["Bright", "Pitch", "Loud", "Noisy", "Rolloff", "MFCC1", "MFCC2", "MFCC3"]},
       {"key": "y_desc", "name": "Y Descriptor", "type": "enum", "options": ["Bright", "Pitch", "Loud", "Noisy", "Rolloff", "MFCC1", "MFCC2", "MFCC3"]},
       {"key": "x_pos", "name": "X Position", "type": "float", "min": 0, "max": 1, "default": 0.5, "step": 0.01},

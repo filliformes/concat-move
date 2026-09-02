@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <math.h>
 #include <sys/stat.h>
 
 #define MAX_FILES        2048
@@ -19,12 +20,12 @@
  * full decode+analysis. Device-local aarch64 only (raw struct dump). */
 
 #define CACHE_MAGIC 0x54434E43u   /* "CNCT" */
-#define CACHE_VER   3u            /* v2 adds k-means centroids; v3 = periodic Hann + adaptive onset */
+#define CACHE_VER   4u            /* v2 k-means; v3 periodic Hann + adaptive onset; v4 PCA map */
 
 typedef struct {
     uint32_t magic, ver;
     uint64_t sig;
-    int32_t  ndesc, nslices, pool_len, kclusters;
+    int32_t  ndesc, nslices, pool_len, kclusters, pca_ok;
 } cache_hdr_t;
 
 static uint64_t fnv1a(uint64_t h, const void *data, int n) {
@@ -74,7 +75,7 @@ static corpus_index_t *cache_load(const char *cache_dir, const char *folder,
     corpus_index_t *ix = (corpus_index_t *)calloc(1, sizeof(corpus_index_t));
     if (!ix) { fclose(fp); return NULL; }
     ix->nslices = hd.nslices; ix->pool_len = hd.pool_len; ix->pool_cap = hd.pool_len;
-    ix->kclusters = hd.kclusters;
+    ix->kclusters = hd.kclusters; ix->pca_ok = hd.pca_ok;
     ix->pool   = (int16_t *)malloc(sizeof(int16_t) * (size_t)hd.pool_len);
     ix->slices = (cslice_t *)malloc(sizeof(cslice_t) * (size_t)hd.nslices);
     ix->qn     = (float *)malloc(sizeof(float) * (size_t)NDESC * hd.nslices);
@@ -89,6 +90,11 @@ static corpus_index_t *cache_load(const char *cache_dir, const char *folder,
            & (fread(ix->slices, sizeof(cslice_t), hd.nslices, fp) == (size_t)hd.nslices)
            & (fread(ix->qn,     sizeof(float), nq, fp) == nq)
            & (nc == 0 || fread(ix->centroids, sizeof(float), nc, fp) == nc)
+           & (fread(ix->pca_mean,    sizeof(float), NDESC, fp) == (size_t)NDESC)
+           & (fread(ix->pca_axis[0], sizeof(float), NDESC, fp) == (size_t)NDESC)
+           & (fread(ix->pca_axis[1], sizeof(float), NDESC, fp) == (size_t)NDESC)
+           & (fread(ix->pca_min,     sizeof(float), 2, fp) == 2)
+           & (fread(ix->pca_max,     sizeof(float), 2, fp) == 2)
            & (fread(ix->pool,   sizeof(int16_t), hd.pool_len, fp) == (size_t)hd.pool_len);
     fclose(fp);
     if (!ok) { corpus_index_free(ix); return NULL; }
@@ -103,7 +109,7 @@ static void cache_store(const char *cache_dir, const char *folder, uint64_t sig,
     char tmp[620]; snprintf(tmp, sizeof(tmp), "%s.tmp", path);
     FILE *fp = fopen(tmp, "wb");
     if (!fp) return;
-    cache_hdr_t hd = { CACHE_MAGIC, CACHE_VER, sig, NDESC, ix->nslices, ix->pool_len, ix->kclusters };
+    cache_hdr_t hd = { CACHE_MAGIC, CACHE_VER, sig, NDESC, ix->nslices, ix->pool_len, ix->kclusters, ix->pca_ok };
     size_t nq = (size_t)NDESC * ix->nslices, nc = (size_t)NDESC * (ix->kclusters > 0 ? ix->kclusters : 0);
     int ok = (fwrite(&hd, sizeof(hd), 1, fp) == 1)
            & (fwrite(ix->median, sizeof(float), NDESC, fp) == (size_t)NDESC)
@@ -111,6 +117,11 @@ static void cache_store(const char *cache_dir, const char *folder, uint64_t sig,
            & (fwrite(ix->slices, sizeof(cslice_t), ix->nslices, fp) == (size_t)ix->nslices)
            & (fwrite(ix->qn,     sizeof(float), nq, fp) == nq)
            & (nc == 0 || fwrite(ix->centroids, sizeof(float), nc, fp) == nc)
+           & (fwrite(ix->pca_mean,    sizeof(float), NDESC, fp) == (size_t)NDESC)
+           & (fwrite(ix->pca_axis[0], sizeof(float), NDESC, fp) == (size_t)NDESC)
+           & (fwrite(ix->pca_axis[1], sizeof(float), NDESC, fp) == (size_t)NDESC)
+           & (fwrite(ix->pca_min,     sizeof(float), 2, fp) == 2)
+           & (fwrite(ix->pca_max,     sizeof(float), 2, fp) == 2)
            & (fwrite(ix->pool,   sizeof(int16_t), ix->pool_len, fp) == (size_t)ix->pool_len);
     fclose(fp);
     if (ok) rename(tmp, path); else remove(tmp);
@@ -170,6 +181,63 @@ static void corpus_kmeans(corpus_index_t *ix) {
     free(cnt); free(asg);
     ix->centroids = cen;
     ix->kclusters = K;
+}
+
+/* PCA learned map: project the NDESC descriptor space onto its top-2 principal
+ * axes so the X/Y map becomes a spread-out timbre plane. Power iteration +
+ * deflation for the top 2 eigenvectors of the covariance. Offline. */
+static void power_iter(const double *C, int d, const double *deflate_v, double deflate_l, double *out) {
+    double v[NDESC]; for (int j = 0; j < d; j++) v[j] = (j == 0) ? 1.0 : 0.001 * (j + 1);
+    for (int it = 0; it < 60; it++) {
+        double w[NDESC], norm = 0.0;
+        for (int j = 0; j < d; j++) {
+            double s = 0.0;
+            for (int k = 0; k < d; k++) {
+                double c = C[j * d + k];
+                if (deflate_v) c -= deflate_l * deflate_v[j] * deflate_v[k];   /* deflate 1st axis */
+                s += c * v[k];
+            }
+            w[j] = s; norm += s * s;
+        }
+        norm = sqrt(norm); if (norm < 1e-12) break;
+        for (int j = 0; j < d; j++) v[j] = w[j] / norm;
+    }
+    for (int j = 0; j < d; j++) out[j] = v[j];
+}
+
+static void corpus_pca(corpus_index_t *ix) {
+    int n = ix->nslices, d = NDESC;
+    ix->pca_ok = 0;
+    if (n < 4) return;
+    double *C = (double *)calloc((size_t)d * d, sizeof(double));
+    double mean[NDESC], v1[NDESC], v2[NDESC];
+    if (!C) return;
+    for (int j = 0; j < d; j++) { double m = 0.0; for (int i = 0; i < n; i++) m += ix->qn[i * d + j]; mean[j] = m / n; }
+    for (int i = 0; i < n; i++) {                    /* covariance (symmetric) */
+        const float *q = &ix->qn[i * d];
+        for (int j = 0; j < d; j++) { double dj = q[j] - mean[j]; for (int k = j; k < d; k++) C[j * d + k] += dj * (q[k] - mean[k]); }
+    }
+    for (int j = 0; j < d; j++) for (int k = j; k < d; k++) { C[j * d + k] /= n; C[k * d + j] = C[j * d + k]; }
+
+    power_iter(C, d, NULL, 0.0, v1);
+    double l1 = 0.0; { double w[NDESC]; for (int j = 0; j < d; j++) { double s = 0; for (int k = 0; k < d; k++) s += C[j * d + k] * v1[k]; w[j] = s; } for (int j = 0; j < d; j++) l1 += v1[j] * w[j]; }
+    power_iter(C, d, v1, l1, v2);
+    free(C);
+
+    float mn[2] = { 1e30f, 1e30f }, mx[2] = { -1e30f, -1e30f };
+    for (int i = 0; i < n; i++) {
+        const float *q = &ix->qn[i * d];
+        double p1 = 0.0, p2 = 0.0;
+        for (int j = 0; j < d; j++) { double dq = q[j] - mean[j]; p1 += dq * v1[j]; p2 += dq * v2[j]; }
+        if (p1 < mn[0]) mn[0] = (float)p1;
+        if (p1 > mx[0]) mx[0] = (float)p1;
+        if (p2 < mn[1]) mn[1] = (float)p2;
+        if (p2 > mx[1]) mx[1] = (float)p2;
+    }
+    for (int j = 0; j < d; j++) { ix->pca_mean[j] = (float)mean[j]; ix->pca_axis[0][j] = (float)v1[j]; ix->pca_axis[1][j] = (float)v2[j]; }
+    ix->pca_min[0] = mn[0]; ix->pca_max[0] = mx[0];
+    ix->pca_min[1] = mn[1]; ix->pca_max[1] = mx[1];
+    ix->pca_ok = (mx[0] > mn[0] && mx[1] > mn[1]) ? 1 : 0;
 }
 
 corpus_index_t *corpus_index_build(const char *folder, int sr,
@@ -265,6 +333,7 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
 
     query_init(&ix->query, ix->qn, ix->nslices);
     corpus_kmeans(ix);                                              /* pad-jump cluster centroids */
+    corpus_pca(ix);                                                 /* learned 2-D map axes */
     if (cache_dir && sig) cache_store(cache_dir, folder, sig, ix);   /* best-effort */
     if (progress) *progress = 100;
     return ix;
