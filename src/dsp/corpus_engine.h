@@ -25,6 +25,8 @@ typedef struct {
     float    *qn;          /* [nslices*NDESC] RobustScaled descriptors (query space) */
     float     median[NDESC], iqr[NDESC];
     query_t   query;       /* bound to qn */
+    int       kclusters;   /* k-means clusters over qn (pad-jump targets); 0 if none */
+    float    *centroids;   /* [kclusters*NDESC] cluster centres in query space */
 } corpus_index_t;
 
 /* Build an index+pool from every audio file in `folder`.

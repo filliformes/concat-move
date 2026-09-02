@@ -241,6 +241,9 @@ typedef struct {
 
     /* Polyphonic Notes mode: one voice per held pad, each with its own amp env */
     note_voice_t         notes[MAX_NOTES];
+
+    /* Map mode pad clusters: holding a pad jumps the query target to a k-means cluster */
+    int                  last_pad_note, pads_held;
 } concat_t;
 
 static void set_param(void *instance, const char *key, const char *val);   /* fwd */
@@ -406,6 +409,7 @@ static void on_midi(void *instance, const uint8_t *msg, int len, int source) {
         nv->active = 1; nv->held = 1; nv->note = d1; nv->vel = d2 / 127.0f;
         nv->amp_stage = 1; nv->amp_level = 0.0f; nv->accum = 0.0;
         inst->note_active = 1; inst->midi_note = d1; inst->velocity = d2 / 127.0f;
+        inst->last_pad_note = d1; inst->pads_held++;      /* Map-mode cluster jump */
     } else if (status == 0x80 || (status == 0x90 && d2 == 0)) {  /* Note Off → release the voice */
         for (int i = 0; i < MAX_NOTES; i++)
             if (inst->notes[i].active && inst->notes[i].held && inst->notes[i].note == d1) {
@@ -413,6 +417,7 @@ static void on_midi(void *instance, const uint8_t *msg, int len, int source) {
             }
         int any = 0; for (int i = 0; i < MAX_NOTES; i++) if (inst->notes[i].held) any = 1;
         inst->note_active = any; inst->aftertouch = 0.0f;
+        if (--inst->pads_held < 0) inst->pads_held = 0;
     } else if (status == 0xA0) {             /* Poly aftertouch = pad pressure */
         inst->aftertouch = d2 / 127.0f;
     } else if (status == 0xE0) {             /* Pitch bend → ± transpose */
@@ -422,7 +427,7 @@ static void on_midi(void *instance, const uint8_t *msg, int len, int source) {
         inst->mod_wheel = d2 / 127.0f;
     } else if (status == 0xB0 && d1 == 123) {/* All notes off */
         for (int i = 0; i < MAX_NOTES; i++) if (inst->notes[i].active) { inst->notes[i].held = 0; inst->notes[i].amp_stage = 4; }
-        inst->note_active = 0; inst->aftertouch = 0.0f;
+        inst->note_active = 0; inst->aftertouch = 0.0f; inst->pads_held = 0;
     }
 }
 
@@ -531,9 +536,10 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
     if (strcmp(key, "analyze") == 0) return snprintf(buf, buf_len, "%d", inst->progress);  /* live 0..100 */
     if (strcmp(key, "_dbg") == 0) {   /* debug introspection */
         corpus_index_t *ix = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE);
-        return snprintf(buf, buf_len, "started=%d arm=%d prog=%d idx=%d nslices=%d pool=%d path=[%s]",
+        return snprintf(buf, buf_len, "started=%d arm=%d prog=%d idx=%d nslices=%d pool=%d kclusters=%d path=[%s]",
                         inst->analyst_started, inst->arm, inst->progress,
-                        ix != NULL, ix ? ix->nslices : -1, ix ? ix->pool_len : -1, inst->corpus_path);
+                        ix != NULL, ix ? ix->nslices : -1, ix ? ix->pool_len : -1,
+                        ix ? ix->kclusters : -1, inst->corpus_path);
     }
 
     /* State serialize: one key=value line per persistent param. */
@@ -722,9 +728,15 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
         else query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
                               xpos, ypos, t, w);
         grain_schedule(&inst->ge, ix, t, w, &gp, 1.0f, 0.0f, &inst->ge.sched_accum, frames, 44100);
-    } else {                                     /* Map: X/Y navigation */
-        query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
-                         xpos, ypos, t, w);
+    } else {                                     /* Map: X/Y navigation, or pad → k-means cluster jump */
+        if (inst->pads_held > 0 && ix->kclusters > 0) {
+            int c = ((inst->last_pad_note % ix->kclusters) + ix->kclusters) % ix->kclusters;
+            const float *cen = &ix->centroids[c * NDESC];
+            for (int j = 0; j < NDESC; j++) { t[j] = cen[j]; w[j] = 1.0f; }   /* full-space nearest to cluster centre */
+        } else {
+            query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
+                             xpos, ypos, t, w);
+        }
         grain_schedule(&inst->ge, ix, t, w, &gp, 1.0f, 0.0f, &inst->ge.sched_accum, frames, 44100);
     }
 

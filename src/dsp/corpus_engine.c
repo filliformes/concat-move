@@ -19,12 +19,12 @@
  * full decode+analysis. Device-local aarch64 only (raw struct dump). */
 
 #define CACHE_MAGIC 0x54434E43u   /* "CNCT" */
-#define CACHE_VER   1u
+#define CACHE_VER   2u            /* v2 adds k-means centroids */
 
 typedef struct {
     uint32_t magic, ver;
     uint64_t sig;
-    int32_t  ndesc, nslices, pool_len;
+    int32_t  ndesc, nslices, pool_len, kclusters;
 } cache_hdr_t;
 
 static uint64_t fnv1a(uint64_t h, const void *data, int n) {
@@ -74,16 +74,21 @@ static corpus_index_t *cache_load(const char *cache_dir, const char *folder,
     corpus_index_t *ix = (corpus_index_t *)calloc(1, sizeof(corpus_index_t));
     if (!ix) { fclose(fp); return NULL; }
     ix->nslices = hd.nslices; ix->pool_len = hd.pool_len; ix->pool_cap = hd.pool_len;
+    ix->kclusters = hd.kclusters;
     ix->pool   = (int16_t *)malloc(sizeof(int16_t) * (size_t)hd.pool_len);
     ix->slices = (cslice_t *)malloc(sizeof(cslice_t) * (size_t)hd.nslices);
     ix->qn     = (float *)malloc(sizeof(float) * (size_t)NDESC * hd.nslices);
-    if (!ix->pool || !ix->slices || !ix->qn) { fclose(fp); corpus_index_free(ix); return NULL; }
+    if (hd.kclusters > 0) ix->centroids = (float *)malloc(sizeof(float) * (size_t)hd.kclusters * NDESC);
+    if (!ix->pool || !ix->slices || !ix->qn || (hd.kclusters > 0 && !ix->centroids)) {
+        fclose(fp); corpus_index_free(ix); return NULL;
+    }
 
-    size_t nq = (size_t)NDESC * hd.nslices;
+    size_t nq = (size_t)NDESC * hd.nslices, nc = (size_t)NDESC * (hd.kclusters > 0 ? hd.kclusters : 0);
     int ok = (fread(ix->median, sizeof(float), NDESC, fp) == (size_t)NDESC)
            & (fread(ix->iqr,    sizeof(float), NDESC, fp) == (size_t)NDESC)
            & (fread(ix->slices, sizeof(cslice_t), hd.nslices, fp) == (size_t)hd.nslices)
            & (fread(ix->qn,     sizeof(float), nq, fp) == nq)
+           & (nc == 0 || fread(ix->centroids, sizeof(float), nc, fp) == nc)
            & (fread(ix->pool,   sizeof(int16_t), hd.pool_len, fp) == (size_t)hd.pool_len);
     fclose(fp);
     if (!ok) { corpus_index_free(ix); return NULL; }
@@ -98,13 +103,14 @@ static void cache_store(const char *cache_dir, const char *folder, uint64_t sig,
     char tmp[620]; snprintf(tmp, sizeof(tmp), "%s.tmp", path);
     FILE *fp = fopen(tmp, "wb");
     if (!fp) return;
-    cache_hdr_t hd = { CACHE_MAGIC, CACHE_VER, sig, NDESC, ix->nslices, ix->pool_len };
-    size_t nq = (size_t)NDESC * ix->nslices;
+    cache_hdr_t hd = { CACHE_MAGIC, CACHE_VER, sig, NDESC, ix->nslices, ix->pool_len, ix->kclusters };
+    size_t nq = (size_t)NDESC * ix->nslices, nc = (size_t)NDESC * (ix->kclusters > 0 ? ix->kclusters : 0);
     int ok = (fwrite(&hd, sizeof(hd), 1, fp) == 1)
            & (fwrite(ix->median, sizeof(float), NDESC, fp) == (size_t)NDESC)
            & (fwrite(ix->iqr,    sizeof(float), NDESC, fp) == (size_t)NDESC)
            & (fwrite(ix->slices, sizeof(cslice_t), ix->nslices, fp) == (size_t)ix->nslices)
            & (fwrite(ix->qn,     sizeof(float), nq, fp) == nq)
+           & (nc == 0 || fwrite(ix->centroids, sizeof(float), nc, fp) == nc)
            & (fwrite(ix->pool,   sizeof(int16_t), ix->pool_len, fp) == (size_t)ix->pool_len);
     fclose(fp);
     if (ok) rename(tmp, path); else remove(tmp);
@@ -115,7 +121,55 @@ void corpus_index_free(corpus_index_t *ix) {
     free(ix->pool);
     free(ix->slices);
     free(ix->qn);
+    free(ix->centroids);
     free(ix);
+}
+
+#define KMEANS_K     16
+#define KMEANS_ITERS 16
+
+/* k-means over the RobustScaled descriptors (qn). Fills ix->centroids/kclusters.
+ * Offline (analyst thread) only. Deterministic init = evenly spaced slices. */
+static void corpus_kmeans(corpus_index_t *ix) {
+    int n = ix->nslices, K = KMEANS_K;
+    if (n <= 0) return;
+    if (K > n) K = n;
+    float *cen = (float *)malloc(sizeof(float) * (size_t)K * NDESC);
+    int   *cnt = (int *)malloc(sizeof(int) * K);
+    int   *asg = (int *)malloc(sizeof(int) * n);
+    if (!cen || !cnt || !asg) { free(cen); free(cnt); free(asg); return; }
+
+    for (int k = 0; k < K; k++)                              /* seed: evenly spaced slices */
+        memcpy(&cen[k * NDESC], &ix->qn[((long)k * n / K) * NDESC], sizeof(float) * NDESC);
+
+    for (int it = 0; it < KMEANS_ITERS; it++) {
+        for (int i = 0; i < n; i++) {                        /* assign to nearest centroid */
+            const float *q = &ix->qn[i * NDESC];
+            int best = 0; float bd = 1e30f;
+            for (int k = 0; k < K; k++) {
+                const float *c = &cen[k * NDESC];
+                float d = 0.0f;
+                for (int j = 0; j < NDESC; j++) { float e = q[j] - c[j]; d += e * e; }
+                if (d < bd) { bd = d; best = k; }
+            }
+            asg[i] = best;
+        }
+        memset(cen, 0, sizeof(float) * (size_t)K * NDESC);   /* recompute as cluster means */
+        memset(cnt, 0, sizeof(int) * K);
+        for (int i = 0; i < n; i++) {
+            int k = asg[i]; cnt[k]++;
+            const float *q = &ix->qn[i * NDESC];
+            float *c = &cen[k * NDESC];
+            for (int j = 0; j < NDESC; j++) c[j] += q[j];
+        }
+        for (int k = 0; k < K; k++) {
+            if (cnt[k] > 0) { float inv = 1.0f / cnt[k]; for (int j = 0; j < NDESC; j++) cen[k * NDESC + j] *= inv; }
+            else memcpy(&cen[k * NDESC], &ix->qn[(rand() % n) * NDESC], sizeof(float) * NDESC);  /* reseed empty */
+        }
+    }
+    free(cnt); free(asg);
+    ix->centroids = cen;
+    ix->kclusters = K;
 }
 
 corpus_index_t *corpus_index_build(const char *folder, int sr,
@@ -201,6 +255,7 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
     free(raw);
 
     query_init(&ix->query, ix->qn, ix->nslices);
+    corpus_kmeans(ix);                                              /* pad-jump cluster centroids */
     if (cache_dir && sig) cache_store(cache_dir, folder, sig, ix);   /* best-effort */
     if (progress) *progress = 100;
     return ix;

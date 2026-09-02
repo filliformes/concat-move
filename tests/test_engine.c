@@ -84,6 +84,9 @@ int main(void) {
     }
     check("high-transpose grains stay in bounds", peak2 <= 32767, NULL);
 
+    { char kb[64]; snprintf(kb, sizeof(kb), "kclusters=%d", ix->kclusters);
+      check("k-means clusters built", ix->kclusters > 0 && ix->centroids != NULL, kb); }
+
     corpus_index_free(ix);
 
     /* Index disk cache: force-build (writes cache) then plain build (must hit + match). */
@@ -107,6 +110,7 @@ int main(void) {
         for (int i = 0; i < c2->pool_len; i++) if (c1->pool[i] != c2->pool[i]) { same = 0; break; }
         check("cache pool bytes identical", same, NULL);
         check("cache load faster than analysis", t_load < t_build, NULL);
+        check("cache preserves k-means clusters", c2->kclusters == c1->kclusters && c1->kclusters > 0, NULL);
     }
     corpus_index_free(c1); corpus_index_free(c2);
     printf("\n%d passed, %d failed\n", npass, nfail);
