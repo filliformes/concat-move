@@ -65,11 +65,11 @@ enum {
     /* Corpus */
     P_POOL_MB, P_RESCAN, P_SLICE_MODE, P_MIN_SLICE, P_MAX_SLICE, P_ANALYZE, P_SILENCE_GATE,
     /* Map */
-    P_X_DESC, P_Y_DESC, P_X_POS, P_Y_POS, P_RADIUS, P_K_NEAREST, P_FOLLOW, P_REPEAT_AVOID,
+    P_X_DESC, P_Y_DESC, P_X_POS, P_Y_POS, P_RADIUS, P_K_NEAREST, P_FOLLOW, P_REPEAT_AVOID, P_LFO_RATE, P_LFO_SHAPE,
     /* Grain */
     P_DENSITY, P_GRAIN_SIZE, P_GRAIN_ENV, P_PITCH, P_PITCH_JITTER, P_PAN_SPREAD, P_REVERSE, P_GRAIN_RAND,
     /* Play / Out */
-    P_PLAY_MODE, P_INPUT_SRC, P_MOSAIC_RATE, P_NOTE_MATCH, P_DRY_MIX, P_VOLUME, P_WIDTH, P_SAT,
+    P_PLAY_MODE, P_NOTE_MATCH, P_DRY_MIX, P_VOLUME, P_WIDTH, P_SAT,
     /* Out — DJ filter + saturation (all modes) */
     P_CUTOFF, P_RESO,
     /* Expression — pad pressure (aftertouch) → destination */
@@ -87,8 +87,7 @@ static const char *ENV_FOLLOW[]     = {"Manual", "LFO", "Sequence"};
 static const char *ENV_GRAIN[]      = {"Hann", "Tukey", "Tri", "Gauss", "Expo", "RevExpo", "Trapez", "Black"};
 static const char *ENV_PLAY_MODE[]  = {"Map", "Notes", "Mosaic"};
 static const char *ENV_PRESSURE[]   = {"Off", "Proximity", "Density", "Bright", "Sat", "Pitch", "Grain", "Jitter"};
-static const char *ENV_INPUT_SRC[]  = {"Line", "Mic"};
-static const char *ENV_MOSAIC_RATE[]= {"Onset", "1/16", "1/8", "1/4"};
+static const char *ENV_LFO_SHAPE[]  = {"Circle", "SineX", "SineY", "S&H"};
 static const char *ENV_NOTE_MATCH[] = {"Off", "Pitch", "Zone"};
 
 typedef struct {
@@ -120,6 +119,8 @@ static const pdef_t PARAMS[NPARAMS] = {
     [P_K_NEAREST]     = {"k_nearest",    "K Nearest",    T_INT,    1,  16, 1,  NULL, 0, 4},
     [P_FOLLOW]        = {"follow",       "Follow",       T_ENUM,   0,   2, 1,  ENV_FOLLOW, 3, 0},
     [P_REPEAT_AVOID]  = {"repeat_avoid", "Repeat Avoid", T_INT,    0,  16, 1,  NULL, 0, 4},
+    [P_LFO_RATE]      = {"lfo_rate",     "LFO Rate",     T_FLOAT, 0.01f, 10, 0.01f, NULL, 0, 0.2f, "Hz"},
+    [P_LFO_SHAPE]     = {"lfo_shape",    "LFO Shape",    T_ENUM,   0,   3, 1,  ENV_LFO_SHAPE, 4, 0},
     /* Grain */
     [P_DENSITY]       = {"density",      "Density",      T_FLOAT,  1, 100, 1,  NULL, 0, 20,  "g/s"},
     [P_GRAIN_SIZE]    = {"grain_size",   "Grain Size",   T_FLOAT, 10,2000, 1,  NULL, 0, 120, "ms"},
@@ -131,8 +132,6 @@ static const pdef_t PARAMS[NPARAMS] = {
     [P_GRAIN_RAND]    = {"grain_rand",   "Grain Rand",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
     /* Play / Out */
     [P_PLAY_MODE]     = {"play_mode",    "Play Mode",    T_ENUM,   0,   2, 1,  ENV_PLAY_MODE, 3, 1},   /* default Notes */
-    [P_INPUT_SRC]     = {"input_src",    "Input Src",    T_ENUM,   0,   1, 1,  ENV_INPUT_SRC, 2, 0},
-    [P_MOSAIC_RATE]   = {"mosaic_rate",  "Mosaic Rate",  T_ENUM,   0,   3, 1,  ENV_MOSAIC_RATE, 4, 0},
     [P_NOTE_MATCH]    = {"note_match",   "Note Match",   T_ENUM,   0,   2, 1,  ENV_NOTE_MATCH, 3, 2},   /* default Zone */
     [P_DRY_MIX]       = {"dry_mix",      "Dry Mix",      T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
     [P_VOLUME]        = {"volume",       "Volume",       T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.8f},
@@ -167,10 +166,10 @@ static const pdef_t PARAMS[NPARAMS] = {
 static const char UI_HIERARCHY[] =
 "{\"modes\":null,\"levels\":{"
 "\"root\":{\"name\":\"Concat\",\"knobs\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"],\"params\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\",{\"level\":\"map\",\"label\":\"Map\"},{\"level\":\"grain\",\"label\":\"Grain\"},{\"level\":\"shape\",\"label\":\"Shape\"},{\"level\":\"play\",\"label\":\"Play\"},{\"level\":\"out\",\"label\":\"Out\"}]},"
-"\"map\":{\"name\":\"Map\",\"knobs\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"radius\",\"k_nearest\",\"follow\",\"repeat_avoid\"],\"params\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"radius\",\"k_nearest\",\"follow\",\"repeat_avoid\"]},"
+"\"map\":{\"name\":\"Map\",\"knobs\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"radius\",\"follow\",\"lfo_rate\",\"lfo_shape\"],\"params\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"radius\",\"k_nearest\",\"follow\",\"lfo_rate\",\"lfo_shape\",\"repeat_avoid\"]},"
 "\"grain\":{\"name\":\"Grain\",\"knobs\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pan_spread\",\"grain_rand\",\"reverse\",\"pitch_jitter\"],\"params\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pan_spread\",\"grain_rand\",\"reverse\",\"pitch_jitter\"]},"
 "\"shape\":{\"name\":\"Shape\",\"knobs\":[\"amp_atk\",\"amp_dec\",\"amp_sus\",\"amp_rel\",\"filt_amt\",\"filt_atk\",\"filt_dec\",\"filt_sus\"],\"params\":[\"amp_atk\",\"amp_dec\",\"amp_sus\",\"amp_rel\",\"filt_amt\",\"filt_atk\",\"filt_dec\",\"filt_sus\"]},"
-"\"play\":{\"name\":\"Play\",\"knobs\":[\"play_mode\",\"input_src\",\"mosaic_rate\",\"note_match\",\"pressure\",\"press_amt\",\"vel_amt\",\"poly\"],\"params\":[\"play_mode\",\"input_src\",\"mosaic_rate\",\"note_match\",\"pressure\",\"press_amt\",\"vel_amt\",\"poly\"]},"
+"\"play\":{\"name\":\"Play\",\"knobs\":[\"play_mode\",\"note_match\",\"pressure\",\"press_amt\",\"vel_amt\",\"poly\"],\"params\":[\"play_mode\",\"note_match\",\"pressure\",\"press_amt\",\"vel_amt\",\"poly\"]},"
 "\"out\":{\"name\":\"Out\",\"knobs\":[\"cutoff\",\"resonance\",\"sat\",\"dry_mix\",\"volume\",\"width\"],\"params\":[\"cutoff\",\"resonance\",\"sat\",\"dry_mix\",\"volume\",\"width\"]}"
 "}}";
 
@@ -229,6 +228,10 @@ typedef struct {
     /* Global envelopes (Map/Mosaic amp; filter env is always global) */
     int                  amp_stage, filt_stage, last_gate;
     float                amp_level, amp_prev, filt_level;
+
+    /* Map LFO (Follow=LFO): self-animates X/Y around their knob positions */
+    float                lfo_phase, lfo_shx, lfo_shy;
+    unsigned             lfo_rng;
 
     /* Polyphonic Notes mode: one voice per held pad, each with its own amp env */
     note_voice_t         notes[MAX_NOTES];
@@ -340,6 +343,8 @@ static void *create_instance(const char *module_dir, const char *json_defaults) 
     concat_t *inst = calloc(1, sizeof(concat_t));
     if (!inst) return NULL;
     for (int i = 0; i < NPARAMS; i++) inst->pv[i] = PARAMS[i].def;
+    inst->lfo_rng = 0x1234567u;
+    inst->lfo_shx = inst->pv[P_X_POS]; inst->lfo_shy = inst->pv[P_Y_POS];
     grain_engine_init(&inst->ge);
     inst->host = g_host;
     inst->mono_analysis = analysis_create(44100, ANALYSIS_N, 40, 13);   /* Mosaic target extraction */
@@ -635,6 +640,29 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
     int pm = (int)inst->pv[P_PLAY_MODE];        /* 0 Map, 1 Notes, 2 Mosaic */
     int nmatch = (int)inst->pv[P_NOTE_MATCH];   /* 0 Off, 1 Pitch, 2 Zone */
     int any_held = 0;
+    int16_t *dry_in = NULL;                     /* live input for Dry Mix (Mosaic only) */
+
+    /* Map LFO (Follow=LFO): self-animate X/Y around their knob positions. */
+    float xpos = inst->pv[P_X_POS], ypos = inst->pv[P_Y_POS];
+    if ((int)inst->pv[P_FOLLOW] == 1) {
+        inst->lfo_phase += inst->pv[P_LFO_RATE] * (float)frames / 44100.0f;
+        if (inst->lfo_phase >= 1.0f) {
+            inst->lfo_phase -= (float)(int)inst->lfo_phase;
+            inst->lfo_rng = inst->lfo_rng * 1664525u + 1013904223u;   /* new Sample&Hold point each cycle */
+            inst->lfo_shx = (inst->lfo_rng >> 8) * (1.0f / 16777216.0f);
+            inst->lfo_rng = inst->lfo_rng * 1664525u + 1013904223u;
+            inst->lfo_shy = (inst->lfo_rng >> 8) * (1.0f / 16777216.0f);
+        }
+        float ph = inst->lfo_phase * 6.2831853f;
+        const float depth = 0.45f;
+        switch ((int)inst->pv[P_LFO_SHAPE]) {
+            case 0: xpos += depth * cosf(ph); ypos += depth * sinf(ph); break;   /* Circle */
+            case 1: xpos += depth * sinf(ph); break;                             /* Sine X */
+            case 2: ypos += depth * sinf(ph); break;                             /* Sine Y */
+            default: xpos = inst->lfo_shx; ypos = inst->lfo_shy; break;          /* Sample & Hold */
+        }
+        xpos = clampf(xpos, 0.0f, 1.0f); ypos = clampf(ypos, 0.0f, 1.0f);
+    }
 
 #define ENVT(v) (0.002f + (v) * (v) * 5.0f)     /* 0..1 knob → 2 ms .. 5 s */
 
@@ -662,10 +690,10 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
             } else if (nmatch == 2) {            /* Zone: note → map X, natural pitch (pads play different parts) */
                 float zx = clampf((nv->note - 36) / 60.0f, 0.0f, 1.0f);
                 query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
-                                 zx, inst->pv[P_Y_POS], t, w);
+                                 zx, ypos, t, w);
             } else {                             /* Off: current map point, retuned chromatically */
                 query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
-                                 inst->pv[P_X_POS], inst->pv[P_Y_POS], t, w);
+                                 xpos, ypos, t, w);
                 target_hz = note_hz;
             }
             /* Velocity Amount: 0 = velocity ignored (always full), 1 = velocity fully scales gain */
@@ -674,6 +702,7 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
         }
     } else if (pm == 2 && inst->host && inst->mono_analysis) {   /* Mosaic: target from live line/mic input */
         int16_t *ain = (int16_t *)(inst->host->mapped_memory + inst->host->audio_in_offset);
+        dry_in = ain;                                            /* expose to Dry Mix */
         for (int i = 0; i < frames; i++) {
             float mono = (ain[i * 2] + ain[i * 2 + 1]) * (0.5f / 32768.0f);
             if (inst->in_fill < ANALYSIS_N) inst->in_frame[inst->in_fill++] = mono;
@@ -681,11 +710,11 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
         }
         if (inst->mosaic_ready) { memcpy(t, inst->mosaic_t, sizeof(float) * NDESC); memcpy(w, inst->mosaic_w, sizeof(float) * NDESC); }
         else query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
-                              inst->pv[P_X_POS], inst->pv[P_Y_POS], t, w);
+                              xpos, ypos, t, w);
         grain_schedule(&inst->ge, ix, t, w, &gp, 1.0f, 0.0f, &inst->ge.sched_accum, frames, 44100);
     } else {                                     /* Map: X/Y navigation */
         query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
-                         inst->pv[P_X_POS], inst->pv[P_Y_POS], t, w);
+                         xpos, ypos, t, w);
         grain_schedule(&inst->ge, ix, t, w, &gp, 1.0f, 0.0f, &inst->ge.sched_accum, frames, 44100);
     }
 
@@ -717,6 +746,7 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
     float kf = 2.0f - 1.9f * inst->pv[P_RESO];
     float a1 = 1.0f / (1.0f + g * (g + kf)), a2 = g * a1, a3 = g * a2;
     float drive = 1.0f + sat * 3.0f, makeup = 1.0f / drive;
+    float dry = dry_in ? inst->pv[P_DRY_MIX] : 0.0f;   /* Dry Mix: blend live input (Mosaic) */
     for (int i = 0; i < frames; i++) {
         for (int ch = 0; ch < 2; ch++) {
             float x = out_lr[i * 2 + ch] * (1.0f / 32768.0f);
@@ -729,6 +759,7 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
                 x = (fmode == 1) ? v2 : (x - kf * v1 - v2);    /* LP : HP */
             }
             if (sat > 0.001f) x = tanhf(x * drive) * makeup;
+            if (dry > 0.0f) x = x * (1.0f - dry) + dry_in[i * 2 + ch] * (1.0f / 32768.0f) * dry;
             out_lr[i * 2 + ch] = (int16_t)(clampf(x, -1.0f, 1.0f) * 32767.0f);
         }
     }
