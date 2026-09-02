@@ -70,6 +70,10 @@ enum {
     P_DENSITY, P_GRAIN_SIZE, P_GRAIN_ENV, P_PITCH, P_PITCH_JITTER, P_PAN_SPREAD, P_REVERSE,
     /* Play / Out */
     P_PLAY_MODE, P_INPUT_SRC, P_MOSAIC_RATE, P_NOTE_MATCH, P_DRY_MIX, P_VOLUME, P_WIDTH, P_SAT,
+    /* Out — post-grain output shaping (all modes) */
+    P_FILTER, P_CUTOFF, P_RESO,
+    /* Expression — pad pressure (aftertouch) → destination */
+    P_PRESSURE, P_PRESS_AMT,
     NPARAMS
 };
 
@@ -78,8 +82,10 @@ enum { T_FLOAT, T_INT, T_ENUM };
 static const char *ENV_SLICE_MODE[] = {"Onset", "Fixed"};
 static const char *ENV_DESC[]       = {"Bright", "Pitch", "Loud", "Noisy", "Rolloff", "MFCC1", "MFCC2", "MFCC3"};
 static const char *ENV_FOLLOW[]     = {"Manual", "LFO", "Sequence"};
-static const char *ENV_GRAIN[]      = {"Hann", "Tukey", "Tri"};
+static const char *ENV_GRAIN[]      = {"Hann", "Tukey", "Tri", "Gauss", "Expo", "RevExpo", "Trapez", "Black"};
 static const char *ENV_PLAY_MODE[]  = {"Map", "Notes", "Mosaic"};
+static const char *ENV_FILTER[]     = {"Off", "LP", "HP"};
+static const char *ENV_PRESSURE[]   = {"Off", "Proximity", "Density", "Bright", "Sat", "Pitch", "Grain", "Jitter"};
 static const char *ENV_INPUT_SRC[]  = {"Line", "Mic"};
 static const char *ENV_MOSAIC_RATE[]= {"Onset", "1/16", "1/8", "1/4"};
 static const char *ENV_NOTE_MATCH[] = {"Off", "Pitch", "Zone"};
@@ -116,7 +122,7 @@ static const pdef_t PARAMS[NPARAMS] = {
     /* Grain */
     [P_DENSITY]       = {"density",      "Density",      T_FLOAT,  1, 100, 1,  NULL, 0, 20,  "g/s"},
     [P_GRAIN_SIZE]    = {"grain_size",   "Grain Size",   T_FLOAT, 10, 500, 5,  NULL, 0, 120, "ms"},
-    [P_GRAIN_ENV]     = {"grain_env",    "Grain Env",    T_ENUM,   0,   2, 1,  ENV_GRAIN, 3, 0},
+    [P_GRAIN_ENV]     = {"grain_env",    "Grain Env",    T_ENUM,   0,   7, 1,  ENV_GRAIN, 8, 0},
     [P_PITCH]         = {"pitch",        "Pitch",        T_FLOAT,-24,  24, 1,  NULL, 0, 0,   "st"},
     [P_PITCH_JITTER]  = {"pitch_jitter", "Pitch Jitter", T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
     [P_PAN_SPREAD]    = {"pan_spread",   "Pan Spread",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.3f},
@@ -130,6 +136,13 @@ static const pdef_t PARAMS[NPARAMS] = {
     [P_VOLUME]        = {"volume",       "Volume",       T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.8f},
     [P_WIDTH]         = {"width",        "Width",        T_FLOAT,  0,   1, 0.01f, NULL, 0, 1.0f},
     [P_SAT]           = {"sat",          "Saturation",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
+    /* Out */
+    [P_FILTER]        = {"filter",       "Filter",       T_ENUM,   0,   2, 1,  ENV_FILTER, 3, 0},
+    [P_CUTOFF]        = {"cutoff",       "Cutoff",       T_FLOAT,  0,   1, 0.01f, NULL, 0, 1.0f},
+    [P_RESO]          = {"resonance",    "Resonance",    T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
+    /* Expression */
+    [P_PRESSURE]      = {"pressure",     "Pressure",     T_ENUM,   0,   7, 1,  ENV_PRESSURE, 8, 1},   /* default Proximity */
+    [P_PRESS_AMT]     = {"press_amt",    "Press Amt",    T_FLOAT,  0,   1, 0.01f, NULL, 0, 1.0f},
 };
 
 /* ui_hierarchy = the knob grid. Root is the landing page (Corpus/setup) with the
@@ -140,10 +153,11 @@ static const pdef_t PARAMS[NPARAMS] = {
  * legacy knob_N_* overlay. Ships in module.json too — keep the two in sync. */
 static const char UI_HIERARCHY[] =
 "{\"modes\":null,\"levels\":{"
-"\"root\":{\"name\":\"Concat\",\"knobs\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"],\"params\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\",{\"level\":\"map\",\"label\":\"Map\"},{\"level\":\"grain\",\"label\":\"Grain\"},{\"level\":\"play\",\"label\":\"Play / Out\"}]},"
+"\"root\":{\"name\":\"Concat\",\"knobs\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"],\"params\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\",{\"level\":\"map\",\"label\":\"Map\"},{\"level\":\"grain\",\"label\":\"Grain\"},{\"level\":\"play\",\"label\":\"Play\"},{\"level\":\"out\",\"label\":\"Out\"}]},"
 "\"map\":{\"name\":\"Map\",\"knobs\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"radius\",\"k_nearest\",\"follow\",\"repeat_avoid\"],\"params\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"radius\",\"k_nearest\",\"follow\",\"repeat_avoid\"]},"
 "\"grain\":{\"name\":\"Grain\",\"knobs\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pitch_jitter\",\"pan_spread\",\"reverse\"],\"params\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pitch_jitter\",\"pan_spread\",\"reverse\"]},"
-"\"play\":{\"name\":\"Play / Out\",\"knobs\":[\"play_mode\",\"input_src\",\"mosaic_rate\",\"note_match\",\"dry_mix\",\"volume\",\"width\",\"sat\"],\"params\":[\"play_mode\",\"input_src\",\"mosaic_rate\",\"note_match\",\"dry_mix\",\"volume\",\"width\",\"sat\"]}"
+"\"play\":{\"name\":\"Play\",\"knobs\":[\"play_mode\",\"input_src\",\"mosaic_rate\",\"note_match\",\"pressure\",\"press_amt\"],\"params\":[\"play_mode\",\"input_src\",\"mosaic_rate\",\"note_match\",\"pressure\",\"press_amt\"]},"
+"\"out\":{\"name\":\"Out\",\"knobs\":[\"filter\",\"cutoff\",\"resonance\",\"sat\",\"dry_mix\",\"volume\",\"width\"],\"params\":[\"filter\",\"cutoff\",\"resonance\",\"sat\",\"dry_mix\",\"volume\",\"width\"]}"
 "}}";
 
 /* ── Instance state ─────────────────────────────────────────────────────────── */
@@ -157,6 +171,7 @@ typedef struct {
     float velocity;
     float pitch_bend;       /* semitones */
     float mod_wheel;
+    float aftertouch;       /* pad pressure 0..1 (poly AT / channel pressure) */
 
     char  corpus_file[512]; /* audio file picked via the filepath browser */
     char  corpus_path[512]; /* its parent dir — the folder analysed as the corpus */
@@ -182,6 +197,9 @@ typedef struct {
     int                  in_fill;
     float                mosaic_t[NDESC], mosaic_w[NDESC];
     int                  mosaic_ready;
+
+    /* Output filter (TPT state-variable, per channel) */
+    float                svf_ic1[2], svf_ic2[2];
 } concat_t;
 
 static void set_param(void *instance, const char *key, const char *val);   /* fwd */
@@ -326,27 +344,26 @@ static void on_midi(void *instance, const uint8_t *msg, int len, int source) {
 
     uint8_t status = msg[0] & 0xF0;
 
-    /* Realtime clock (len==1) — for follow=Sequence / tempo-synced mosaic_rate (TODO). */
-    if (len == 1) {
-        /* 0xF8 tick / 0xFA start / 0xFB continue / 0xFC stop */
-        return;
-    }
+    if (len == 1) return;                    /* realtime clock (TODO: follow=Sequence) */
+    if (status == 0xD0 && len >= 2) { inst->aftertouch = msg[1] / 127.0f; return; }  /* channel pressure */
     if (len < 3) return;
     uint8_t d1 = msg[1], d2 = msg[2];
 
-    if (status == 0x90 && d2 > 0) {          /* Note On — Notes mode: pitch-match nearest slice (TODO) */
+    if (status == 0x90 && d2 > 0) {          /* Note On */
         inst->midi_note   = d1;
         inst->velocity    = d2 / 127.0f;
         inst->note_active = 1;
     } else if (status == 0x80 || (status == 0x90 && d2 == 0)) {  /* Note Off */
-        if (inst->midi_note == d1) inst->note_active = 0;
-    } else if (status == 0xE0) {             /* Pitch bend → ± transpose active grains */
+        if (inst->midi_note == d1) { inst->note_active = 0; inst->aftertouch = 0.0f; }
+    } else if (status == 0xA0) {             /* Poly aftertouch = pad pressure */
+        inst->aftertouch = d2 / 127.0f;
+    } else if (status == 0xE0) {             /* Pitch bend → ± transpose */
         int bend = (d2 << 7) | d1;
         inst->pitch_bend = (bend - 8192) / 8192.0f * 2.0f;
-    } else if (status == 0xB0 && d1 == 1) {  /* Mod wheel → radius/density (TODO) */
+    } else if (status == 0xB0 && d1 == 1) {  /* Mod wheel (TODO) */
         inst->mod_wheel = d2 / 127.0f;
     } else if (status == 0xB0 && d1 == 123) {/* All notes off */
-        inst->note_active = 0;
+        inst->note_active = 0; inst->aftertouch = 0.0f;
     }
 }
 
@@ -543,6 +560,19 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
     gp.width        = inst->pv[P_WIDTH];
     gp.target_hz    = 0.0f;
 
+    /* Pad pressure (aftertouch) → chosen destination. Grain-domain destinations here;
+     * Bright/Sat applied in the post chain below. */
+    float at   = inst->aftertouch * inst->pv[P_PRESS_AMT];
+    int   pdst = (int)inst->pv[P_PRESSURE];
+    if (at > 0.0f) switch (pdst) {
+        case 1: gp.radius       = clampf(gp.radius + at, 0.0f, 1.0f); break;             /* Proximity */
+        case 2: gp.density      = clampf(gp.density + at * 80.0f, 1.0f, 100.0f); break;  /* Density */
+        case 5: gp.pitch_semi  += at * 12.0f; break;                                     /* Pitch (+1 oct) */
+        case 6: gp.grain_size_ms = clampf(gp.grain_size_ms + at * 300.0f, 10.0f, 500.0f); break; /* Grain */
+        case 7: gp.pitch_jitter = clampf(gp.pitch_jitter + at, 0.0f, 1.0f); break;       /* Jitter */
+        default: break;
+    }
+
     float t[NDESC], w[NDESC];
     int pm = (int)inst->pv[P_PLAY_MODE];        /* 0 Map, 1 Notes, 2 Mosaic */
     if (pm == 1) {                              /* Notes: pitch-match + retune each grain to the note */
@@ -584,6 +614,36 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
                          inst->pv[P_X_POS], inst->pv[P_Y_POS], t, w);
     }
     grain_render(&inst->ge, ix, t, w, &gp, out_lr, frames, 44100);
+
+    /* Output shaping applied to ALL modes: LP/HP filter (TPT SVF) then saturation.
+     * Pad pressure can drive Brightness (opens an LP) or Saturation here. */
+    int   fmode = (int)inst->pv[P_FILTER];
+    float sat   = inst->pv[P_SAT];
+    float cutp  = inst->pv[P_CUTOFF];
+    if (pdst == 3) { fmode = 1; cutp = clampf(0.35f + at, 0.0f, 1.0f); }   /* Bright → pressure opens an LP */
+    else if (pdst == 4) sat = clampf(sat + at, 0.0f, 1.0f);                /* Sat */
+    if (fmode != 0 || sat > 0.001f) {
+        float fc = 20.0f * powf(1000.0f, cutp);                   /* 20 Hz .. 20 kHz */
+        float g  = tanf((float)M_PI * fc / SAMPLE_RATE);
+        float kf = 2.0f - 1.9f * inst->pv[P_RESO];                 /* damping 2 (flat) .. 0.1 (resonant) */
+        float a1 = 1.0f / (1.0f + g * (g + kf)), a2 = g * a1, a3 = g * a2;
+        float drive = 1.0f + sat * 3.0f, makeup = 1.0f / drive;    /* unity small-signal → no hot output */
+        for (int i = 0; i < frames; i++) {
+            for (int ch = 0; ch < 2; ch++) {
+                float x = out_lr[i * 2 + ch] * (1.0f / 32768.0f);
+                if (fmode != 0) {
+                    float v3 = x - inst->svf_ic2[ch];
+                    float v1 = a1 * inst->svf_ic1[ch] + a2 * v3;
+                    float v2 = inst->svf_ic2[ch] + a2 * inst->svf_ic1[ch] + a3 * v3;
+                    inst->svf_ic1[ch] = 2.0f * v1 - inst->svf_ic1[ch] + 1e-20f;  /* denormal guard */
+                    inst->svf_ic2[ch] = 2.0f * v2 - inst->svf_ic2[ch] + 1e-20f;
+                    x = (fmode == 1) ? v2 : (x - kf * v1 - v2);    /* LP : HP */
+                }
+                if (sat > 0.001f) x = tanhf(x * drive) * makeup;
+                out_lr[i * 2 + ch] = (int16_t)(clampf(x, -1.0f, 1.0f) * 32767.0f);
+            }
+        }
+    }
 }
 
 /* ── API v2 export (8 fields — get_error REQUIRED) ──────────────────────────── */

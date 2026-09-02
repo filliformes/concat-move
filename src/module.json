@@ -25,7 +25,8 @@
             "corpus_file", "pool_mb", "rescan", "slice_mode", "min_slice_ms", "max_slice_ms", "analyze", "silence_gate",
             {"level": "map", "label": "Map"},
             {"level": "grain", "label": "Grain"},
-            {"level": "play", "label": "Play / Out"}
+            {"level": "play", "label": "Play"},
+            {"level": "out", "label": "Out"}
           ]
         },
         "map": {
@@ -39,9 +40,14 @@
           "params": ["density", "grain_size", "grain_env", "pitch", "pitch_jitter", "pan_spread", "reverse"]
         },
         "play": {
-          "name": "Play / Out",
-          "knobs": ["play_mode", "input_src", "mosaic_rate", "note_match", "dry_mix", "volume", "width", "sat"],
-          "params": ["play_mode", "input_src", "mosaic_rate", "note_match", "dry_mix", "volume", "width", "sat"]
+          "name": "Play",
+          "knobs": ["play_mode", "input_src", "mosaic_rate", "note_match", "pressure", "press_amt"],
+          "params": ["play_mode", "input_src", "mosaic_rate", "note_match", "pressure", "press_amt"]
+        },
+        "out": {
+          "name": "Out",
+          "knobs": ["filter", "cutoff", "resonance", "sat", "dry_mix", "volume", "width"],
+          "params": ["filter", "cutoff", "resonance", "sat", "dry_mix", "volume", "width"]
         }
       }
     },
@@ -64,7 +70,7 @@
       {"key": "repeat_avoid", "name": "Repeat Avoid", "type": "int", "min": 0, "max": 16, "default": 4},
       {"key": "density", "name": "Density", "type": "float", "min": 1, "max": 100, "default": 20, "step": 1, "unit": "g/s", "display_format": "%.0f"},
       {"key": "grain_size", "name": "Grain Size", "type": "float", "min": 10, "max": 500, "default": 120, "step": 5, "unit": "ms", "display_format": "%.0f"},
-      {"key": "grain_env", "name": "Grain Env", "type": "enum", "options": ["Hann", "Tukey", "Tri"]},
+      {"key": "grain_env", "name": "Grain Env", "type": "enum", "options": ["Hann", "Tukey", "Tri", "Gauss", "Expo", "RevExpo", "Trapez", "Black"]},
       {"key": "pitch", "name": "Pitch", "type": "float", "min": -24, "max": 24, "default": 0, "step": 1, "unit": "st", "display_format": "%.0f"},
       {"key": "pitch_jitter", "name": "Pitch Jitter", "type": "float", "min": 0, "max": 1, "default": 0, "step": 0.01},
       {"key": "pan_spread", "name": "Pan Spread", "type": "float", "min": 0, "max": 1, "default": 0.3, "step": 0.01},
@@ -76,7 +82,12 @@
       {"key": "dry_mix", "name": "Dry Mix", "type": "float", "min": 0, "max": 1, "default": 0, "step": 0.01},
       {"key": "volume", "name": "Volume", "type": "float", "min": 0, "max": 1, "default": 0.8, "step": 0.01},
       {"key": "width", "name": "Width", "type": "float", "min": 0, "max": 1, "default": 1.0, "step": 0.01},
-      {"key": "sat", "name": "Saturation", "type": "float", "min": 0, "max": 1, "default": 0, "step": 0.01}
+      {"key": "sat", "name": "Saturation", "type": "float", "min": 0, "max": 1, "default": 0, "step": 0.01},
+      {"key": "filter", "name": "Filter", "type": "enum", "options": ["Off", "LP", "HP"]},
+      {"key": "cutoff", "name": "Cutoff", "type": "float", "min": 0, "max": 1, "default": 1.0, "step": 0.01},
+      {"key": "resonance", "name": "Resonance", "type": "float", "min": 0, "max": 1, "default": 0, "step": 0.01},
+      {"key": "pressure", "name": "Pressure", "type": "enum", "options": ["Off", "Proximity", "Density", "Bright", "Sat", "Pitch", "Grain", "Jitter"]},
+      {"key": "press_amt", "name": "Press Amt", "type": "float", "min": 0, "max": 1, "default": 1.0, "step": 0.01}
     ]
   }
 }

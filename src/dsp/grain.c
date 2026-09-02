@@ -22,16 +22,36 @@ static float g_rand(grain_engine_t *ge) {        /* uniform 0..1 */
 }
 
 static float grain_env_val(int env, int age, int glen) {
+    const float PI = (float)M_PI;
     float x = glen > 0 ? (float)age / glen : 0.0f;     /* 0..1 */
     if (x < 0.0f) x = 0.0f; else if (x > 1.0f) x = 1.0f;
-    if (env == 2) return x < 0.5f ? 2.0f * x : 2.0f * (1.0f - x);   /* triangular */
-    if (env == 1) {                                    /* Tukey (25% tapers) */
-        const float a = 0.25f;
-        if (x < a)       return 0.5f * (1.0f - cosf((float)M_PI * x / a));
-        if (x > 1.0f - a) return 0.5f * (1.0f - cosf((float)M_PI * (1.0f - x) / a));
-        return 1.0f;
+    switch (env) {
+        case 1: {                                       /* Tukey (25% cosine tapers) */
+            const float a = 0.25f;
+            if (x < a)        return 0.5f * (1.0f - cosf(PI * x / a));
+            if (x > 1.0f - a) return 0.5f * (1.0f - cosf(PI * (1.0f - x) / a));
+            return 1.0f;
+        }
+        case 2: return x < 0.5f ? 2.0f * x : 2.0f * (1.0f - x);      /* Triangular */
+        case 3: { float d = x - 0.5f; return expf(-18.0f * d * d); } /* Gaussian */
+        case 4: {                                       /* Expodec: fast attack, exp decay */
+            float atk = x < 0.02f ? x / 0.02f : 1.0f;
+            return atk * expf(-5.0f * x);
+        }
+        case 5: {                                       /* Reverse Expodec: exp swell, fast release */
+            float y = 1.0f - x;
+            float atk = y < 0.02f ? y / 0.02f : 1.0f;
+            return atk * expf(-5.0f * y);
+        }
+        case 6: {                                       /* Trapezoid (linear tapers, flat top) */
+            const float r = 0.1f;
+            if (x < r)        return x / r;
+            if (x > 1.0f - r) return (1.0f - x) / r;
+            return 1.0f;
+        }
+        case 7: return 0.42f - 0.5f * cosf(2.0f * PI * x) + 0.08f * cosf(4.0f * PI * x);  /* Blackman */
+        default: return 0.5f * (1.0f - cosf(2.0f * PI * x));         /* Hann */
     }
-    return 0.5f * (1.0f - cosf(2.0f * (float)M_PI * x));            /* Hann */
 }
 
 static void spawn_grain(grain_engine_t *ge, corpus_index_t *ix,
