@@ -112,24 +112,15 @@ static const pdef_t PARAMS[NPARAMS] = {
     [P_SAT]           = {"sat",          "Saturation",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
 };
 
-/* Page → knob-slot → param index (-1 = empty). Order matches ui_hierarchy pages. */
-enum { PG_CORPUS, PG_MAP, PG_GRAIN, PG_PLAY, NPAGES };
-static const int PAGE_KNOBS[NPAGES][8] = {
-    [PG_CORPUS] = {P_POOL_MB, P_RESCAN, P_SLICE_MODE, P_MIN_SLICE, P_MAX_SLICE, P_ANALYZE, P_SILENCE_GATE, -1},
-    [PG_MAP]    = {P_X_DESC, P_Y_DESC, P_X_POS, P_Y_POS, P_RADIUS, P_K_NEAREST, P_FOLLOW, P_REPEAT_AVOID},
-    [PG_GRAIN]  = {P_DENSITY, P_GRAIN_SIZE, P_GRAIN_ENV, P_PITCH, P_PITCH_JITTER, P_PAN_SPREAD, P_REVERSE, -1},
-    [PG_PLAY]   = {P_PLAY_MODE, P_INPUT_SRC, P_MOSAIC_RATE, P_NOTE_MATCH, P_DRY_MIX, P_VOLUME, P_WIDTH, P_SAT},
-};
-
-/* Ships in module.json too; sound generators MUST also return this from get_param. */
+/* ui_hierarchy = the knob grid. Root is the landing page (Corpus/setup) with the
+ * filepath **Source** cell (`corpus_file`) first; Map / Grain / Play are further
+ * grid pages reached by paging. A `filepath` param IS a grid cell (breakbeat's
+ * A_sample_path pattern) — jog-click it to open the file browser. Knob turns route
+ * as set_param(key)/get_param(key) with metadata from chain_params, so there is no
+ * legacy knob_N_* overlay. Ships in module.json too — keep the two in sync. */
 static const char UI_HIERARCHY[] =
 "{\"modes\":null,\"levels\":{"
-"\"root\":{\"name\":\"Concat\",\"knobs\":[],\"params\":["
-  "{\"level\":\"corpus\",\"label\":\"Corpus\"},"
-  "{\"level\":\"map\",\"label\":\"Map\"},"
-  "{\"level\":\"grain\",\"label\":\"Grain\"},"
-  "{\"level\":\"play\",\"label\":\"Play / Out\"}]},"
-"\"corpus\":{\"name\":\"Corpus\",\"knobs\":[\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"],\"params\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"]},"
+"\"root\":{\"name\":\"Concat\",\"knobs\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"],\"params\":[{\"level\":\"map\",\"label\":\"Map\"},{\"level\":\"grain\",\"label\":\"Grain\"},{\"level\":\"play\",\"label\":\"Play / Out\"}]},"
 "\"map\":{\"name\":\"Map\",\"knobs\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"radius\",\"k_nearest\",\"follow\",\"repeat_avoid\"],\"params\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"radius\",\"k_nearest\",\"follow\",\"repeat_avoid\"]},"
 "\"grain\":{\"name\":\"Grain\",\"knobs\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pitch_jitter\",\"pan_spread\",\"reverse\"],\"params\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pitch_jitter\",\"pan_spread\",\"reverse\"]},"
 "\"play\":{\"name\":\"Play / Out\",\"knobs\":[\"play_mode\",\"input_src\",\"mosaic_rate\",\"note_match\",\"dry_mix\",\"volume\",\"width\",\"sat\"],\"params\":[\"play_mode\",\"input_src\",\"mosaic_rate\",\"note_match\",\"dry_mix\",\"volume\",\"width\",\"sat\"]}"
@@ -139,7 +130,6 @@ static const char UI_HIERARCHY[] =
 
 typedef struct {
     float pv[NPARAMS];      /* live param values (enums/ints stored as float) */
-    int   current_page;     /* set via set_param("_level", ...) */
 
     /* MIDI (Notes mode) */
     int   midi_note;
@@ -184,7 +174,6 @@ static void *create_instance(const char *module_dir, const char *json_defaults) 
     concat_t *inst = calloc(1, sizeof(concat_t));
     if (!inst) return NULL;
     for (int i = 0; i < NPARAMS; i++) inst->pv[i] = PARAMS[i].def;
-    inst->current_page = PG_CORPUS;
     if (json_defaults && *json_defaults)
         set_param(inst, "state", json_defaults);        /* restore persisted params */
     return inst;
@@ -236,29 +225,6 @@ static void set_param(void *instance, const char *key, const char *val) {
     concat_t *inst = (concat_t *)instance;
     if (!inst || !key || !val) return;
 
-    /* Page-aware knob overlay: framework sends knob_N_adjust for physical knob N. */
-    if (strncmp(key, "knob_", 5) == 0 && strstr(key, "_adjust")) {
-        int slot = atoi(key + 5) - 1;                 /* 1-indexed → 0-indexed */
-        if (slot >= 0 && slot < 8) {
-            int idx = PAGE_KNOBS[inst->current_page][slot];
-            if (idx >= 0 && idx != P_ANALYZE) {  /* analyze = DSP-driven progress, read-only */
-                const pdef_t *p = &PARAMS[idx];
-                float step = (p->type == T_FLOAT) ? p->step : 1.0f;
-                inst->pv[idx] = clampf(inst->pv[idx] + atoi(val) * step, p->min, p->max);
-            }
-        }
-        return;
-    }
-
-    /* Page switch (jog into a sub-level). Match level key or its label. */
-    if (strcmp(key, "_level") == 0) {
-        if      (!strcmp(val, "corpus") || !strcmp(val, "Corpus"))      inst->current_page = PG_CORPUS;
-        else if (!strcmp(val, "map")    || !strcmp(val, "Map"))         inst->current_page = PG_MAP;
-        else if (!strcmp(val, "grain")  || !strcmp(val, "Grain"))       inst->current_page = PG_GRAIN;
-        else if (!strcmp(val, "play")   || !strcmp(val, "Play / Out"))  inst->current_page = PG_PLAY;
-        return;
-    }
-
     if (strcmp(key, "corpus_file") == 0) {            /* filepath browser → an audio file; use its folder */
         strncpy(inst->corpus_file, val, sizeof(inst->corpus_file) - 1);
         inst->corpus_file[sizeof(inst->corpus_file) - 1] = 0;
@@ -301,20 +267,6 @@ static void set_param(void *instance, const char *key, const char *val) {
 
 /* ── get_param ──────────────────────────────────────────────────────────────── */
 
-static int fmt_value(const pdef_t *p, float v, char *buf, int buf_len) {
-    if (p->type == T_ENUM) {
-        int idx = (int)(v + 0.5f);
-        if (idx < 0) idx = 0;
-        if (idx >= p->nopts) idx = p->nopts - 1;
-        return snprintf(buf, buf_len, "%s", p->opts[idx]);
-    }
-    if (p->type == T_INT)
-        return snprintf(buf, buf_len, p->unit ? "%d %s" : "%d", (int)lrintf(v), p->unit);
-    /* float: percent for 0..1 params, else integer value + unit */
-    if (p->min == 0.0f && p->max == 1.0f) return snprintf(buf, buf_len, "%d%%", (int)(v * 100.0f));
-    return snprintf(buf, buf_len, p->unit ? "%.0f %s" : "%.1f", v, p->unit);
-}
-
 static int get_param(void *instance, const char *key, char *buf, int buf_len) {
     concat_t *inst = (concat_t *)instance;
     if (!inst || !key) return -1;
@@ -328,24 +280,6 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
         if (n >= buf_len) n = buf_len - 1;
         memcpy(buf, UI_HIERARCHY, n); buf[n] = 0;
         return n;
-    }
-
-    /* Page-aware knob popup label/value. */
-    if (strncmp(key, "knob_", 5) == 0 && strstr(key, "_name")) {
-        int slot = atoi(key + 5) - 1;
-        if (slot >= 0 && slot < 8) {
-            int idx = PAGE_KNOBS[inst->current_page][slot];
-            if (idx >= 0) return snprintf(buf, buf_len, "%s", PARAMS[idx].label);
-        }
-        return 0;
-    }
-    if (strncmp(key, "knob_", 5) == 0 && strstr(key, "_value")) {
-        int slot = atoi(key + 5) - 1;
-        if (slot >= 0 && slot < 8) {
-            int idx = PAGE_KNOBS[inst->current_page][slot];
-            if (idx >= 0) return fmt_value(&PARAMS[idx], inst->pv[idx], buf, buf_len);
-        }
-        return 0;
     }
 
     if (strcmp(key, "name") == 0) return snprintf(buf, buf_len, "Concat");

@@ -20,18 +20,12 @@
       "levels": {
         "root": {
           "name": "Concat",
-          "knobs": [],
+          "knobs": ["corpus_file", "pool_mb", "rescan", "slice_mode", "min_slice_ms", "max_slice_ms", "analyze", "silence_gate"],
           "params": [
-            {"level": "corpus", "label": "Corpus"},
             {"level": "map", "label": "Map"},
             {"level": "grain", "label": "Grain"},
             {"level": "play", "label": "Play / Out"}
           ]
-        },
-        "corpus": {
-          "name": "Corpus",
-          "knobs": ["pool_mb", "rescan", "slice_mode", "min_slice_ms", "max_slice_ms", "analyze", "silence_gate"],
-          "params": ["corpus_file", "pool_mb", "rescan", "slice_mode", "min_slice_ms", "max_slice_ms", "analyze", "silence_gate"]
         },
         "map": {
           "name": "Map",
