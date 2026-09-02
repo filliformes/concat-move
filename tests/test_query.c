@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
+#include <math.h>
 
 static int npass = 0, nfail = 0;
 static void check(const char *name, int cond, const char *fmt, ...) {
@@ -69,6 +70,23 @@ int main(void) {
     /* Mosaic: full target = copy of slice 3's descriptor → returns slice 3 */
     query_target_full(&qn[3 * NDESC], t, w);
     check("mosaic full-vector target → slice 3", query_select(&q, t, w, 1, 0.0f) == 3, NULL);
+
+    /* Concatenation cost: consecutive picks should stay near each other (smooth),
+     * i.e. mostly ±1 slice on the 100-spaced line, vs ~200 for random jumps. */
+    query_init(&q, qn, NS);                 /* reset last_sel */
+    query_set_repeat_avoid(&q, 0);
+    query_target_map(&q, D_CENTROID_MEAN, D_PITCH, 0.5f, 0.5f, t, w);   /* centre target */
+    int prev = query_select(&q, t, w, 5, 1.0f);
+    double stepsum = 0.0; int steps = 0, sseen[5] = {0};
+    for (int i = 0; i < 80; i++) {
+        int s = query_select(&q, t, w, 5, 1.0f);
+        stepsum += fabs(qn[s * NDESC + D_CENTROID_MEAN] - qn[prev * NDESC + D_CENTROID_MEAN]);
+        steps++; if (s >= 0 && s < 5) sseen[s] = 1; prev = s;
+    }
+    double avg_step = stepsum / steps;
+    int nvisit = 0; for (int i = 0; i < 5; i++) nvisit += sseen[i];
+    check("concat: consecutive picks are neighbours (smooth)", avg_step < 160.0, "avg step %.0f (adjacent=100)", avg_step);
+    check("concat: still wanders the corpus (not stuck)", nvisit >= 3, "%d/5 visited", nvisit);
 
     printf("\n%d passed, %d failed\n", npass, nfail);
     return nfail ? 1 : 0;

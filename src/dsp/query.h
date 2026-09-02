@@ -25,6 +25,7 @@ typedef struct {
     int          ring_cap;              /* = repeat_avoid, 0..QUERY_RING_MAX */
     int          ring_count;
     int          ring_head;
+    int          last_sel;              /* last chosen slice (concatenation-cost continuity), -1 = none */
     unsigned     rng;
 } query_t;
 

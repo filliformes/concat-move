@@ -26,7 +26,7 @@ static int in_ring(const query_t *q, int idx) {
 
 void query_init(query_t *q, const float *qn, int nslices) {
     memset(q, 0, sizeof(*q));
-    q->qn = qn; q->nslices = nslices; q->rng = 0x1234567u;
+    q->qn = qn; q->nslices = nslices; q->rng = 0x1234567u; q->last_sel = -1;
     for (int d = 0; d < NDESC; d++) { q->nav_min[d] = 1e30f; q->nav_max[d] = -1e30f; }
     for (int i = 0; i < nslices; i++)
         for (int d = 0; d < NDESC; d++) {
@@ -63,6 +63,19 @@ static float wdist2(const float *t, const float *w, const float *v) {
     return d;
 }
 
+/* Full-space squared distance between two slices (concatenation cost). */
+static float slice_dist2(const query_t *q, int a, int b) {
+    const float *va = &q->qn[a * NDESC], *vb = &q->qn[b * NDESC];
+    float d = 0.0f;
+    for (int i = 0; i < NDESC; i++) { float diff = va[i] - vb[i]; d += diff * diff; }
+    return d;
+}
+
+/* CataRT-style concatenation cost weight (blend of target cost and continuity with the
+ * last-played slice). Always-on and moderate: smooths grain-to-grain jumps while `radius`
+ * still governs variety. Dialable via a knob is a follow-up (chain_params at ceiling). */
+#define CONCAT_WEIGHT 0.35f
+
 int query_select(query_t *q, const float *t, const float *w, int k, float radius) {
     if (q->nslices <= 0) return -1;
     if (k < 1) k = 1;
@@ -89,7 +102,7 @@ int query_select(query_t *q, const float *t, const float *w, int k, float radius
             float d = wdist2(t, w, &q->qn[i * NDESC]);
             if (d < bestd) { bestd = d; best = i; }
         }
-        if (best >= 0) push_ring(q, best);
+        if (best >= 0) { push_ring(q, best); q->last_sel = best; }
         return best;
     }
 
@@ -98,8 +111,36 @@ int query_select(query_t *q, const float *t, const float *w, int k, float radius
     int pool = (int)ceilf(1.0f + radius * (nb - 1));   /* radius widens pool 1..nb */
     if (pool < 1) pool = 1;
     if (pool > nb) pool = nb;
-    int pick = (pool == 1) ? 0 : (int)(q_rand(q) % (unsigned)pool);
-    int idx = bi[pick];
+
+    int idx;
+    if (pool == 1 || q->last_sel < 0 || q->last_sel >= q->nslices) {
+        idx = bi[(pool == 1) ? 0 : (int)(q_rand(q) % (unsigned)pool)];
+    } else {
+        /* Concatenation cost: weighted-random among the radius pool, biased toward low
+         * (target + continuity) cost. Smooths grain-to-grain jumps while `radius` still
+         * governs spread and every candidate stays reachable (exploration preserved). */
+        float cd[QUERY_RING_MAX];
+        float tmin = bd[0], tmax = bd[0], cmin = 1e30f, cmax = -1e30f;
+        for (int j = 0; j < pool; j++) {
+            cd[j] = slice_dist2(q, bi[j], q->last_sel);
+            if (bd[j] < tmin) tmin = bd[j];
+            if (bd[j] > tmax) tmax = bd[j];
+            if (cd[j] < cmin) cmin = cd[j];
+            if (cd[j] > cmax) cmax = cd[j];
+        }
+        float tr = tmax > tmin ? tmax - tmin : 1.0f, cr = cmax > cmin ? cmax - cmin : 1.0f;
+        float wt[QUERY_RING_MAX], wsum = 0.0f;
+        for (int j = 0; j < pool; j++) {
+            if (bi[j] == q->last_sel) { wt[j] = 0.0f; continue; }   /* never re-pick the same slice */
+            float comb = (1.0f - CONCAT_WEIGHT) * (bd[j] - tmin) / tr + CONCAT_WEIGHT * (cd[j] - cmin) / cr;
+            wt[j] = 1.0f - comb; if (wt[j] < 0.05f) wt[j] = 0.05f;   /* floor keeps all reachable */
+            wsum += wt[j];
+        }
+        float r = ((q_rand(q) >> 8) * (1.0f / 16777216.0f)) * wsum, acc = 0.0f;
+        idx = bi[0];
+        for (int j = 0; j < pool; j++) { if (wt[j] <= 0.0f) continue; acc += wt[j]; if (r <= acc) { idx = bi[j]; break; } }
+    }
     push_ring(q, idx);
+    q->last_sel = idx;
     return idx;
 }
