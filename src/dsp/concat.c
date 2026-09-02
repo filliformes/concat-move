@@ -239,6 +239,11 @@ typedef struct {
     float                lfo_phase, lfo_shx, lfo_shy;
     unsigned             lfo_rng;
 
+    /* MIDI clock / tempo sync (Follow=Sequence locks the LFO to the beat) */
+    uint64_t             global_samples, last_beat_sample;
+    float                samples_per_beat;   /* from incoming 24-PPQN clock; default = 120 BPM */
+    int                  clock_tick;
+
     /* Polyphonic Notes mode: one voice per held pad, each with its own amp env */
     note_voice_t         notes[MAX_NOTES];
 
@@ -358,6 +363,7 @@ static void *create_instance(const char *module_dir, const char *json_defaults) 
     for (int i = 0; i < NPARAMS; i++) inst->pv[i] = PARAMS[i].def;
     inst->lfo_rng = 0x1234567u;
     inst->lfo_shx = inst->pv[P_X_POS]; inst->lfo_shy = inst->pv[P_Y_POS];
+    inst->samples_per_beat = 22050.0f;   /* 120 BPM fallback until MIDI clock arrives */
     grain_engine_init(&inst->ge);
     inst->host = g_host;
     inst->mono_analysis = analysis_create(44100, ANALYSIS_N, 40, 13);   /* Mosaic target extraction */
@@ -395,7 +401,22 @@ static void on_midi(void *instance, const uint8_t *msg, int len, int source) {
 
     uint8_t status = msg[0] & 0xF0;
 
-    if (len == 1) return;                    /* realtime clock (TODO: follow=Sequence) */
+    if (len == 1) {                          /* system realtime (1 byte) — MIDI clock/transport */
+        if (msg[0] == 0xF8) {                /* timing clock: 24 per quarter note */
+            if (++inst->clock_tick >= 24) {  /* one beat elapsed → measure its length */
+                inst->clock_tick = 0;
+                if (inst->last_beat_sample > 0) {
+                    float spb = (float)(inst->global_samples - inst->last_beat_sample);
+                    if (spb > 2000.0f && spb < 300000.0f)   /* ~9..1300 BPM sanity */
+                        inst->samples_per_beat = 0.5f * inst->samples_per_beat + 0.5f * spb;
+                }
+                inst->last_beat_sample = inst->global_samples;
+            }
+        } else if (msg[0] == 0xFA) {         /* start → align the downbeat */
+            inst->clock_tick = 0; inst->lfo_phase = 0.0f; inst->last_beat_sample = inst->global_samples;
+        }
+        return;
+    }
     if (status == 0xD0 && len >= 2) { inst->aftertouch = msg[1] / 127.0f; return; }  /* channel pressure */
     if (len < 3) return;
     uint8_t d1 = msg[1], d2 = msg[2];
@@ -498,7 +519,7 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
         int n = 0;
 #define CP_EMIT(...) do { if (n < buf_len) n += snprintf(buf + n, buf_len - n, __VA_ARGS__); } while (0)
         CP_EMIT("[{\"key\":\"corpus_file\",\"name\":\"Source\",\"type\":\"filepath\","
-                "\"root\":\"/data/UserData/UserLibrary/Samples\",\"filter\":[\".wav\",\".flac\",\".mp3\"]}");
+                "\"root\":\"/data/UserData/UserLibrary\",\"filter\":[\".wav\",\".flac\",\".mp3\"]}");
         for (int i = 0; i < NPARAMS; i++) {
             const pdef_t *p = &PARAMS[i];
             CP_EMIT(",{\"key\":\"%s\",\"name\":\"%s\",", p->key, p->label);
@@ -536,10 +557,10 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
     if (strcmp(key, "analyze") == 0) return snprintf(buf, buf_len, "%d", inst->progress);  /* live 0..100 */
     if (strcmp(key, "_dbg") == 0) {   /* debug introspection */
         corpus_index_t *ix = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE);
-        return snprintf(buf, buf_len, "started=%d arm=%d prog=%d idx=%d nslices=%d pool=%d kclusters=%d path=[%s]",
+        return snprintf(buf, buf_len, "started=%d arm=%d prog=%d idx=%d nslices=%d pool=%d kclusters=%d spb=%d path=[%s]",
                         inst->analyst_started, inst->arm, inst->progress,
                         ix != NULL, ix ? ix->nslices : -1, ix ? ix->pool_len : -1,
-                        ix ? ix->kclusters : -1, inst->corpus_path);
+                        ix ? ix->kclusters : -1, (int)inst->samples_per_beat, inst->corpus_path);
     }
 
     /* State serialize: one key=value line per persistent param. */
@@ -617,6 +638,7 @@ static void adsr_advance(int *stage, float *lvl, float atk, float dec, float sus
 
 static void render_block(void *instance, int16_t *out_lr, int frames) {
     concat_t *inst = (concat_t *)instance;
+    inst->global_samples += (uint64_t)frames;      /* drives MIDI-clock beat timing */
     corpus_index_t *ix = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE);
     if (!ix || ix->nslices == 0) { memset(out_lr, 0, sizeof(int16_t) * 2 * frames); return; }
 
@@ -658,10 +680,15 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
     int any_held = 0;
     int16_t *dry_in = NULL;                     /* live input for Dry Mix (Mosaic only) */
 
-    /* Map LFO (Follow=LFO): self-animate X/Y around their knob positions. */
+    /* Map LFO — Follow=LFO (free, Hz) or Follow=Sequence (tempo-locked: LFO Rate =
+     * cycles per beat, driven by the incoming MIDI clock / 120 BPM fallback). */
     float xpos = inst->pv[P_X_POS], ypos = inst->pv[P_Y_POS];
-    if ((int)inst->pv[P_FOLLOW] == 1) {
-        inst->lfo_phase += inst->pv[P_LFO_RATE] * (float)frames / 44100.0f;
+    int followm = (int)inst->pv[P_FOLLOW];
+    if (followm == 1 || followm == 2) {
+        float spb = inst->samples_per_beat > 100.0f ? inst->samples_per_beat : 22050.0f;
+        float adv = (followm == 2) ? inst->pv[P_LFO_RATE] * (float)frames / spb          /* cycles/beat */
+                                   : inst->pv[P_LFO_RATE] * (float)frames / 44100.0f;     /* Hz */
+        inst->lfo_phase += adv;
         if (inst->lfo_phase >= 1.0f) {
             inst->lfo_phase -= (float)(int)inst->lfo_phase;
             inst->lfo_rng = inst->lfo_rng * 1664525u + 1013904223u;   /* new Sample&Hold point each cycle */

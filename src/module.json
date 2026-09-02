@@ -64,7 +64,7 @@
       }
     },
     "chain_params": [
-      {"key": "corpus_file", "name": "Source", "type": "filepath", "root": "/data/UserData/UserLibrary/Samples", "filter": [".wav", ".flac", ".mp3"], "default": ""},
+      {"key": "corpus_file", "name": "Source", "type": "filepath", "root": "/data/UserData/UserLibrary", "filter": [".wav", ".flac", ".mp3"], "default": ""},
       {"key": "pool_mb", "name": "Pool Cap", "type": "int", "min": 16, "max": 512, "default": 128, "unit": "MB"},
       {"key": "rescan", "name": "Rescan", "type": "int", "min": 0, "max": 127, "default": 0},
       {"key": "slice_mode", "name": "Slice Mode", "type": "enum", "options": ["Onset", "Fixed"]},

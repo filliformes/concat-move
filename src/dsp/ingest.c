@@ -95,16 +95,27 @@ int ingest_scan_folders(corpus_folder_t *out, int max) {
     return n;
 }
 
-int ingest_list_audio(const char *dir, char (*paths)[INGEST_PATH], int max) {
+/* Recurse a folder (bounded depth) collecting audio files into paths[]. Depth cap
+ * bounds symlink loops; the file cap (`max`) bounds total. Subfolders first, then
+ * files, so nested sample libraries are picked up (a whole tree as one corpus). */
+static void scan_audio(const char *dir, char (*paths)[INGEST_PATH], int max, int *n, int depth) {
+    if (*n >= max || depth > 8) return;
     DIR *d = opendir(dir);
-    if (!d) return 0;
-    int n = 0; struct dirent *e;
-    while ((e = readdir(d)) && n < max) {
-        if (e->d_name[0] == '.' || !is_audio(e->d_name)) continue;
-        snprintf(paths[n], INGEST_PATH, "%s/%s", dir, e->d_name);
-        n++;
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d)) && *n < max) {
+        if (e->d_name[0] == '.') continue;
+        char full[INGEST_PATH];
+        snprintf(full, sizeof(full), "%s/%s", dir, e->d_name);
+        if (is_dir_entry(dir, e))       scan_audio(full, paths, max, n, depth + 1);
+        else if (is_audio(e->d_name)) { snprintf(paths[*n], INGEST_PATH, "%s", full); (*n)++; }
     }
     closedir(d);
+}
+
+int ingest_list_audio(const char *dir, char (*paths)[INGEST_PATH], int max) {
+    int n = 0;
+    scan_audio(dir, paths, max, &n, 0);
     return n;
 }
 
