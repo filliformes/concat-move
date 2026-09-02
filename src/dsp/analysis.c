@@ -67,7 +67,7 @@ analysis_t *analysis_create(int sr, int fft_size, int n_mel, int n_mfcc) {
     }
 
     for (int i = 0; i < fft_size; i++)             /* Hann */
-        a->window[i] = 0.5f * (1.0f - (float)cos(2.0 * M_PI * i / (fft_size - 1)));
+        a->window[i] = 0.5f * (1.0f - (float)cos(2.0 * M_PI * i / fft_size));   /* periodic (DFT-even) Hann */
 
     double lo = 20.0, hi = sr / 2.0;               /* triangular mel filterbank */
     double mlo = hz2mel(lo), mhi = hz2mel(hi);

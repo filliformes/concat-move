@@ -19,7 +19,7 @@
  * full decode+analysis. Device-local aarch64 only (raw struct dump). */
 
 #define CACHE_MAGIC 0x54434E43u   /* "CNCT" */
-#define CACHE_VER   2u            /* v2 adds k-means centroids */
+#define CACHE_VER   3u            /* v2 adds k-means centroids; v3 = periodic Hann + adaptive onset */
 
 typedef struct {
     uint32_t magic, ver;

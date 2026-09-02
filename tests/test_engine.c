@@ -69,7 +69,7 @@ int main(void) {
     int16_t out[128 * 2];
     int peak = 0; long nz = 0;
     for (int b = 0; b < 200; b++) {
-        grain_schedule(&ge, ix, t, w, &gp, 1.0f, 0.0f, &ge.sched_accum, 128, 44100);
+        grain_schedule(&ge, ix, t, w, &gp, 1.0f, NULL, 0.0f, &ge.sched_accum, 128, 44100);
         grain_mix(&ge, &gp, out, 128, 44100);
         for (int s = 0; s < 256; s++) { int v = out[s] < 0 ? -out[s] : out[s]; if (v > peak) peak = v; if (v) nz++; }
     }
@@ -83,7 +83,7 @@ int main(void) {
     gp.pitch_semi = 48.0f; gp.reverse_prob = 1.0f; grain_engine_init(&ge);
     int peak2 = 0;
     for (int b = 0; b < 300; b++) {
-        grain_schedule(&ge, ix, t, w, &gp, 1.0f, 0.0f, &ge.sched_accum, 128, 44100);
+        grain_schedule(&ge, ix, t, w, &gp, 1.0f, NULL, 0.0f, &ge.sched_accum, 128, 44100);
         grain_mix(&ge, &gp, out, 128, 44100);
         for (int s = 0; s < 256; s++) { int v = out[s] < 0 ? -out[s] : out[s]; if (v > peak2) peak2 = v; }
     }
@@ -108,8 +108,9 @@ int main(void) {
 
     corpus_index_free(ix);
 
-    /* Index disk cache: force-build (writes cache) then plain build (must hit + match). */
-    const char *cd = "/tmp/concat_test_cache";
+    /* Index disk cache: force-build (writes cache) then plain build (must hit + match).
+     * Use the /data user partition — the device rootfs (/tmp) can be full. */
+    const char *cd = "/data/UserData/schwung/concat-cache-test";
     struct timespec cb0, cb1, cl0, cl1;
     clock_gettime(CLOCK_MONOTONIC, &cb0);
     corpus_index_t *c1 = corpus_index_build(folder, 44100, 0, 2646, 17640, 0.02f, 1000000, cd, 1, &prog);

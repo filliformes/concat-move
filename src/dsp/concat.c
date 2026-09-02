@@ -739,9 +739,11 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
                                  xpos, ypos, t, w);
                 target_hz = note_hz;
             }
-            /* Velocity Amount: 0 = velocity ignored (always full), 1 = velocity fully scales gain */
+            /* Velocity Amount: 0 = velocity ignored (always full), 1 = velocity fully scales gain.
+             * The amp envelope is passed LIVE (&nv->amp_level) so this note's grains fade together
+             * on release — even long grains — instead of playing out at their spawn gain. */
             float ev = 1.0f - inst->pv[P_VEL_AMT] * (1.0f - nv->vel);
-            grain_schedule(&inst->ge, ix, t, w, &gp, nv->amp_level * ev, target_hz, &nv->accum, frames, 44100);
+            grain_schedule(&inst->ge, ix, t, w, &gp, ev, &nv->amp_level, target_hz, &nv->accum, frames, 44100);
         }
     } else if (pm == 2 && inst->host && inst->mono_analysis) {   /* Mosaic: target from live line/mic input */
         int16_t *ain = (int16_t *)(inst->host->mapped_memory + inst->host->audio_in_offset);
@@ -754,7 +756,7 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
         if (inst->mosaic_ready) { memcpy(t, inst->mosaic_t, sizeof(float) * NDESC); memcpy(w, inst->mosaic_w, sizeof(float) * NDESC); }
         else query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
                               xpos, ypos, t, w);
-        grain_schedule(&inst->ge, ix, t, w, &gp, 1.0f, 0.0f, &inst->ge.sched_accum, frames, 44100);
+        grain_schedule(&inst->ge, ix, t, w, &gp, 1.0f, NULL, 0.0f, &inst->ge.sched_accum, frames, 44100);
     } else {                                     /* Map: X/Y navigation, or pad → k-means cluster jump */
         if (inst->pads_held > 0 && ix->kclusters > 0) {
             int c = ((inst->last_pad_note % ix->kclusters) + ix->kclusters) % ix->kclusters;
@@ -764,7 +766,7 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
             query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
                              xpos, ypos, t, w);
         }
-        grain_schedule(&inst->ge, ix, t, w, &gp, 1.0f, 0.0f, &inst->ge.sched_accum, frames, 44100);
+        grain_schedule(&inst->ge, ix, t, w, &gp, 1.0f, NULL, 0.0f, &inst->ge.sched_accum, frames, 44100);
     }
 
     grain_mix(&inst->ge, &gp, out_lr, frames, 44100);   /* per-note gains already baked into grains */

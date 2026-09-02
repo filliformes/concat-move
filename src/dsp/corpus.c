@@ -114,17 +114,28 @@ int concat_onset_slice(analysis_t *a, const float *buf, int len,
         float med = percentile_sorted(win, c, 0.5f);
         float v = flux[i] - med; df[i] = v > 0.0f ? v : 0.0f;
     }
-    double m = 0.0; for (int i = 0; i < nf; i++) m += df[i]; m /= nf;
-    double var = 0.0; for (int i = 0; i < nf; i++) { double d = df[i] - m; var += d * d; } var /= nf;
-    float thr = (float)(m + sqrt(var)); if (thr <= 0.0f) thr = 1e-6f;
+    /* Adaptive threshold: local mean+std over a moving window (prefix sums), so a
+     * file whose loudness varies isn't over-segmented in loud passages nor missed
+     * in quiet ones — unlike a single global mean+std. */
+    double *ps = (double *)calloc(nf + 1, sizeof(double));
+    double *pss = (double *)calloc(nf + 1, sizeof(double));
+    if (!ps || !pss) { free(ps); free(pss); free(flux); free(df); free(mag); free(prev); free(frame); free(onset); return 0; }
+    for (int i = 0; i < nf; i++) { ps[i + 1] = ps[i] + df[i]; pss[i + 1] = pss[i] + (double)df[i] * df[i]; }
+    const int W = 32;                                   /* ±~0.37 s window */
 
     int debounce = min_len / hop; if (debounce < 1) debounce = 1;
     int no = 0, last = -debounce - 1;
     onset[no++] = 0;                                     /* segment always starts at 0 */
-    for (int i = 1; i < nf - 1; i++)
+    for (int i = 1; i < nf - 1; i++) {
+        int lo = i - W < 0 ? 0 : i - W, hi = i + W >= nf ? nf - 1 : i + W, cnt = hi - lo + 1;
+        double s = ps[hi + 1] - ps[lo], ss = pss[hi + 1] - pss[lo];
+        double mean = s / cnt, v = ss / cnt - mean * mean; if (v < 0.0) v = 0.0;
+        float thr = (float)(mean + sqrt(v)); if (thr < 1e-6f) thr = 1e-6f;
         if (df[i] > thr && df[i] >= df[i - 1] && df[i] > df[i + 1] && (i - last) >= debounce) {
             onset[no++] = i * hop; last = i;
         }
+    }
+    free(ps); free(pss);
 
     int ns = 0;
     for (int k = 0; k < no && ns < max_slices; k++) {

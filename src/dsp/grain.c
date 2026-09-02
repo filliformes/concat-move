@@ -76,7 +76,7 @@ static inline float grain_env_val(int env, int age, int glen) {
 
 static void spawn_grain(grain_engine_t *ge, corpus_index_t *ix,
                         const float *target, const float *weight,
-                        const grain_params_t *gp, float gain, float target_hz, int sr) {
+                        const grain_params_t *gp, float gain, const float *amp, float target_hz, int sr) {
     int sel = query_select(&ix->query, target, weight, gp->k_nearest, gp->radius);
     if (sel < 0 || sel >= ix->nslices) return;
 
@@ -104,6 +104,7 @@ static void spawn_grain(grain_engine_t *ge, corpus_index_t *ix,
     g->grain_len = glen;
     g->age  = 0;
     g->gain = gain;
+    g->amp  = amp;
 
     /* A grain that outlasts its slice loops it; crossfade the loop seam to kill the click. */
     if (glen > g->len) {
@@ -139,10 +140,10 @@ static inline int16_t clamp16(float x) {
 
 void grain_schedule(grain_engine_t *ge, corpus_index_t *ix,
                     const float *target, const float *weight, const grain_params_t *gp,
-                    float gain, float target_hz, double *accum, int frames, int sr) {
+                    float gain, const float *amp, float target_hz, double *accum, int frames, int sr) {
     if (!ix || ix->nslices == 0) return;
     *accum += (double)gp->density * frames / sr;
-    while (*accum >= 1.0) { spawn_grain(ge, ix, target, weight, gp, gain, target_hz, sr); *accum -= 1.0; }
+    while (*accum >= 1.0) { spawn_grain(ge, ix, target, weight, gp, gain, amp, target_hz, sr); *accum -= 1.0; }
 }
 
 void grain_mix(grain_engine_t *ge, const grain_params_t *gp, int16_t *out_lr, int frames, int sr) {
@@ -178,7 +179,7 @@ void grain_mix(grain_engine_t *ge, const grain_params_t *gp, int16_t *out_lr, in
             const int decl = 32;   /* ~0.7 ms */
             if (g->age < decl)                          env *= (float)g->age / decl;
             else if (g->age >= g->grain_len - decl)     env *= (float)(g->grain_len - 1 - g->age) / decl;  /* → 0 on the last sample */
-            samp *= env * g->gain;
+            samp *= env * g->gain * (g->amp ? *g->amp : 1.0f);   /* live note-voice envelope */
             l += samp * g->panl;
             r += samp * g->panr;
             g->pos += g->reverse ? -g->rate : g->rate;
