@@ -89,7 +89,7 @@ static const pdef_t PARAMS[NPARAMS] = {
     [P_MIN_SLICE]     = {"min_slice_ms", "Min Slice",    T_FLOAT, 20, 500, 5,  NULL, 0, 60,  "ms"},
     [P_MAX_SLICE]     = {"max_slice_ms", "Max Slice",    T_FLOAT,100,2000,10,  NULL, 0, 400, "ms"},
     [P_ANALYZE]       = {"analyze",      "Analyze",      T_INT,    0, 100, 1,  NULL, 0, 0},
-    [P_SILENCE_GATE]  = {"silence_gate", "Silence Gate", T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.1f},
+    [P_SILENCE_GATE]  = {"silence_gate", "Silence Gate", T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.02f},
     /* Map */
     [P_X_DESC]        = {"x_desc",       "X Descriptor", T_ENUM,   0,   7, 1,  ENV_DESC, 8, 0},
     [P_Y_DESC]        = {"y_desc",       "Y Descriptor", T_ENUM,   0,   7, 1,  ENV_DESC, 8, 1},
@@ -428,6 +428,12 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
     if (strcmp(key, "corpus_file") == 0) return snprintf(buf, buf_len, "%s", inst->corpus_file);
     if (strcmp(key, "corpus_path") == 0) return snprintf(buf, buf_len, "%s", inst->corpus_path);
     if (strcmp(key, "analyze") == 0) return snprintf(buf, buf_len, "%d", inst->progress);  /* live 0..100 */
+    if (strcmp(key, "_dbg") == 0) {   /* debug introspection */
+        corpus_index_t *ix = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE);
+        return snprintf(buf, buf_len, "started=%d arm=%d prog=%d idx=%d nslices=%d pool=%d path=[%s]",
+                        inst->analyst_started, inst->arm, inst->progress,
+                        ix != NULL, ix ? ix->nslices : -1, ix ? ix->pool_len : -1, inst->corpus_path);
+    }
 
     /* State serialize: one key=value line per persistent param. */
     if (strcmp(key, "state") == 0) {
