@@ -59,6 +59,10 @@ typedef struct {
 } concat_host_t;
 static const concat_host_t *g_host = NULL;
 
+/* On-disk index cache root (survives module redeploys; on the user partition, not
+ * the full rootfs). A signature over file mtimes/sizes + slice params validates it. */
+#define CONCAT_CACHE_DIR "/data/UserData/schwung/concat-cache"
+
 /* ── Parameter table (table-driven get/set + page-aware knob overlay) ───────── */
 
 enum {
@@ -212,6 +216,7 @@ typedef struct {
     int              analyst_started;
     char             pending_path[512];
     int              a_slice_mode, a_min_len, a_max_len, a_pool_samples;  /* snapshot at arm */
+    int              a_force;             /* 1 = rescan (ignore disk cache) */
     float            a_sil;
     volatile int     progress;           /* 0..100, served by get_param("analyze") */
 
@@ -286,10 +291,12 @@ static long mem_available_mb(void) {
     return p ? atol(p + 13) / 1024 : 0;   /* kB → MB */
 }
 
-/* Snapshot the corpus path + analysis params and wake the analyst. */
-static void arm_analyst(concat_t *inst) {
+/* Snapshot the corpus path + analysis params and wake the analyst.
+ * force = 1 (rescan) rebuilds from scratch, ignoring the on-disk cache. */
+static void arm_analyst(concat_t *inst, int force) {
     if (!inst->analyst_started || inst->corpus_path[0] == 0) return;
     pthread_mutex_lock(&inst->lock);
+    inst->a_force = force;
     strncpy(inst->pending_path, inst->corpus_path, sizeof(inst->pending_path) - 1);
     inst->pending_path[sizeof(inst->pending_path) - 1] = 0;
     inst->a_slice_mode = (int)inst->pv[P_SLICE_MODE];
@@ -323,12 +330,14 @@ static void *analyst_thread(void *arg) {
         char path[512];
         strncpy(path, inst->pending_path, sizeof(path) - 1); path[sizeof(path) - 1] = 0;
         int sm = inst->a_slice_mode, mn = inst->a_min_len, mx = inst->a_max_len, ps = inst->a_pool_samples;
+        int force = inst->a_force;
         float sg = inst->a_sil;
         pthread_mutex_unlock(&inst->lock);
 
         if (path[0]) {
             inst->progress = 0;
-            corpus_index_t *ni = corpus_index_build(path, 44100, sm, mn, mx, sg, ps, &inst->progress);
+            corpus_index_t *ni = corpus_index_build(path, 44100, sm, mn, mx, sg, ps,
+                                                    CONCAT_CACHE_DIR, force, &inst->progress);
             corpus_index_t *old = __atomic_exchange_n(&inst->index, ni, __ATOMIC_ACQ_REL);
             if (old) { usleep(60000); corpus_index_free(old); }  /* let one render block pass */
             inst->progress = ni ? 100 : 0;
@@ -430,14 +439,14 @@ static void set_param(void *instance, const char *key, const char *val) {
         inst->corpus_path[sizeof(inst->corpus_path) - 1] = 0;
         char *slash = strrchr(inst->corpus_path, '/');   /* dirname → the corpus folder */
         if (slash && slash != inst->corpus_path) *slash = 0;
-        arm_analyst(inst);                                /* analyse the picked folder */
+        arm_analyst(inst, 0);                             /* analyse the picked folder (use cache if valid) */
         return;
     }
 
     if (strcmp(key, "rescan") == 0) {                     /* Pattern-3 action → re-analyse */
         int v = atoi(val);
         inst->pv[P_RESCAN] = (float)(v < 0 ? 0 : (v > 127 ? 127 : v));
-        if (v != 0) arm_analyst(inst);
+        if (v != 0) arm_analyst(inst, 1);                 /* rescan → force rebuild, ignore cache */
         return;
     }
 

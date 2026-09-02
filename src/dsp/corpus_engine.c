@@ -5,9 +5,110 @@
 #include "ingest.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <sys/stat.h>
 
 #define MAX_FILES        2048
 #define MAX_SLICES_FILE  4096
+
+/* ── On-disk index cache ─────────────────────────────────────────────────────
+ * A folder's analysed index (pool + descriptors) is cached as one binary file.
+ * The cache is validated by a signature over each file's mtime/size plus the
+ * slicing params, so an unchanged folder reloads in a disk read instead of a
+ * full decode+analysis. Device-local aarch64 only (raw struct dump). */
+
+#define CACHE_MAGIC 0x54434E43u   /* "CNCT" */
+#define CACHE_VER   1u
+
+typedef struct {
+    uint32_t magic, ver;
+    uint64_t sig;
+    int32_t  ndesc, nslices, pool_len;
+} cache_hdr_t;
+
+static uint64_t fnv1a(uint64_t h, const void *data, int n) {
+    const unsigned char *p = (const unsigned char *)data;
+    for (int i = 0; i < n; i++) { h ^= p[i]; h *= 0x100000001b3ULL; }
+    return h;
+}
+
+/* Order-independent content signature: XOR of per-file (path+mtime+size) hashes,
+ * mixed with the slicing params. Returns 0 (→ "no signature") if any stat fails. */
+static uint64_t corpus_signature(char (*paths)[INGEST_PATH], int nfiles,
+                                 int slice_mode, int min_len, int max_len, float sil_gate, int sr) {
+    uint64_t x = 0;
+    for (int f = 0; f < nfiles; f++) {
+        struct stat st;
+        if (stat(paths[f], &st) != 0) return 0;
+        uint64_t h = fnv1a(0xcbf29ce484222325ULL, paths[f], (int)strlen(paths[f]));
+        long mt = (long)st.st_mtime, sz = (long)st.st_size;
+        h = fnv1a(h, &mt, sizeof(mt));
+        h = fnv1a(h, &sz, sizeof(sz));
+        x ^= h;
+    }
+    int parms[4] = { slice_mode, min_len, max_len, sr };
+    uint64_t s = fnv1a(0xcbf29ce484222325ULL, &x, sizeof(x));
+    s = fnv1a(s, parms, sizeof(parms));
+    s = fnv1a(s, &sil_gate, sizeof(sil_gate));
+    return s ? s : 1;   /* never 0 (reserved) */
+}
+
+static void cache_path(char *out, int outsz, const char *cache_dir, const char *folder) {
+    uint64_t h = fnv1a(0xcbf29ce484222325ULL, folder, (int)strlen(folder));
+    snprintf(out, outsz, "%s/concat_%016llx.idx", cache_dir, (unsigned long long)h);
+}
+
+/* Load a cached index if the signature matches and it still fits the pool cap. */
+static corpus_index_t *cache_load(const char *cache_dir, const char *folder,
+                                  uint64_t sig, int pool_cap_samples) {
+    char path[600]; cache_path(path, sizeof(path), cache_dir, folder);
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return NULL;
+    cache_hdr_t hd;
+    if (fread(&hd, sizeof(hd), 1, fp) != 1 ||
+        hd.magic != CACHE_MAGIC || hd.ver != CACHE_VER || hd.ndesc != NDESC ||
+        hd.sig != sig || hd.nslices <= 0 || hd.pool_len <= 0 ||
+        hd.pool_len > pool_cap_samples) { fclose(fp); return NULL; }
+
+    corpus_index_t *ix = (corpus_index_t *)calloc(1, sizeof(corpus_index_t));
+    if (!ix) { fclose(fp); return NULL; }
+    ix->nslices = hd.nslices; ix->pool_len = hd.pool_len; ix->pool_cap = hd.pool_len;
+    ix->pool   = (int16_t *)malloc(sizeof(int16_t) * (size_t)hd.pool_len);
+    ix->slices = (cslice_t *)malloc(sizeof(cslice_t) * (size_t)hd.nslices);
+    ix->qn     = (float *)malloc(sizeof(float) * (size_t)NDESC * hd.nslices);
+    if (!ix->pool || !ix->slices || !ix->qn) { fclose(fp); corpus_index_free(ix); return NULL; }
+
+    size_t nq = (size_t)NDESC * hd.nslices;
+    int ok = (fread(ix->median, sizeof(float), NDESC, fp) == (size_t)NDESC)
+           & (fread(ix->iqr,    sizeof(float), NDESC, fp) == (size_t)NDESC)
+           & (fread(ix->slices, sizeof(cslice_t), hd.nslices, fp) == (size_t)hd.nslices)
+           & (fread(ix->qn,     sizeof(float), nq, fp) == nq)
+           & (fread(ix->pool,   sizeof(int16_t), hd.pool_len, fp) == (size_t)hd.pool_len);
+    fclose(fp);
+    if (!ok) { corpus_index_free(ix); return NULL; }
+    query_init(&ix->query, ix->qn, ix->nslices);
+    return ix;
+}
+
+/* Write the index to the cache (best-effort; atomic via temp + rename). */
+static void cache_store(const char *cache_dir, const char *folder, uint64_t sig, const corpus_index_t *ix) {
+    mkdir(cache_dir, 0777);
+    char path[600]; cache_path(path, sizeof(path), cache_dir, folder);
+    char tmp[620]; snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE *fp = fopen(tmp, "wb");
+    if (!fp) return;
+    cache_hdr_t hd = { CACHE_MAGIC, CACHE_VER, sig, NDESC, ix->nslices, ix->pool_len };
+    size_t nq = (size_t)NDESC * ix->nslices;
+    int ok = (fwrite(&hd, sizeof(hd), 1, fp) == 1)
+           & (fwrite(ix->median, sizeof(float), NDESC, fp) == (size_t)NDESC)
+           & (fwrite(ix->iqr,    sizeof(float), NDESC, fp) == (size_t)NDESC)
+           & (fwrite(ix->slices, sizeof(cslice_t), ix->nslices, fp) == (size_t)ix->nslices)
+           & (fwrite(ix->qn,     sizeof(float), nq, fp) == nq)
+           & (fwrite(ix->pool,   sizeof(int16_t), ix->pool_len, fp) == (size_t)ix->pool_len);
+    fclose(fp);
+    if (ok) rename(tmp, path); else remove(tmp);
+}
 
 void corpus_index_free(corpus_index_t *ix) {
     if (!ix) return;
@@ -20,6 +121,7 @@ void corpus_index_free(corpus_index_t *ix) {
 corpus_index_t *corpus_index_build(const char *folder, int sr,
                                    int slice_mode, int min_len, int max_len,
                                    float sil_gate, int pool_cap_samples,
+                                   const char *cache_dir, int force_rescan,
                                    volatile int *progress) {
     if (progress) *progress = 0;
 
@@ -27,6 +129,13 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
     if (!paths) return NULL;
     int nfiles = ingest_list_audio(folder, paths, MAX_FILES);
     if (nfiles <= 0) { free(paths); return NULL; }
+
+    /* Fast path: an on-disk cache whose signature still matches → load, skip analysis. */
+    uint64_t sig = cache_dir ? corpus_signature(paths, nfiles, slice_mode, min_len, max_len, sil_gate, sr) : 0;
+    if (cache_dir && sig && !force_rescan) {
+        corpus_index_t *hit = cache_load(cache_dir, folder, sig, pool_cap_samples);
+        if (hit) { free(paths); if (progress) *progress = 100; return hit; }
+    }
 
     analysis_t *a = analysis_create(sr, 1024, 40, 13);
     corpus_index_t *ix = (corpus_index_t *)calloc(1, sizeof(corpus_index_t));
@@ -92,6 +201,7 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
     free(raw);
 
     query_init(&ix->query, ix->qn, ix->nslices);
+    if (cache_dir && sig) cache_store(cache_dir, folder, sig, ix);   /* best-effort */
     if (progress) *progress = 100;
     return ix;
 }

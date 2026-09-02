@@ -16,7 +16,7 @@ int main(void) {
     int prog = 0;
     /* ~1M-sample pool (~23s) so analysis stops after a few files → fast test. */
     struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0);
-    corpus_index_t *ix = corpus_index_build(folder, 44100, 0 /*onset*/, 2646, 17640, 0.02f, 1000000, &prog);
+    corpus_index_t *ix = corpus_index_build(folder, 44100, 0 /*onset*/, 2646, 17640, 0.02f, 1000000, NULL, 0, &prog);
     clock_gettime(CLOCK_MONOTONIC, &t1);
     double secs = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
 
@@ -85,6 +85,30 @@ int main(void) {
     check("high-transpose grains stay in bounds", peak2 <= 32767, NULL);
 
     corpus_index_free(ix);
+
+    /* Index disk cache: force-build (writes cache) then plain build (must hit + match). */
+    const char *cd = "/tmp/concat_test_cache";
+    struct timespec cb0, cb1, cl0, cl1;
+    clock_gettime(CLOCK_MONOTONIC, &cb0);
+    corpus_index_t *c1 = corpus_index_build(folder, 44100, 0, 2646, 17640, 0.02f, 1000000, cd, 1, &prog);
+    clock_gettime(CLOCK_MONOTONIC, &cb1);
+    clock_gettime(CLOCK_MONOTONIC, &cl0);
+    corpus_index_t *c2 = corpus_index_build(folder, 44100, 0, 2646, 17640, 0.02f, 1000000, cd, 0, &prog);
+    clock_gettime(CLOCK_MONOTONIC, &cl1);
+    double t_build = (cb1.tv_sec - cb0.tv_sec) + (cb1.tv_nsec - cb0.tv_nsec) / 1e9;
+    double t_load  = (cl1.tv_sec - cl0.tv_sec) + (cl1.tv_nsec - cl0.tv_nsec) / 1e9;
+    check("cache: both builds succeeded", c1 && c2, NULL);
+    if (c1 && c2) {
+        char cbuf[160];
+        snprintf(cbuf, sizeof(cbuf), "nslices %d==%d, pool %d==%d | build %.3fs -> load %.3fs",
+                 c1->nslices, c2->nslices, c1->pool_len, c2->pool_len, t_build, t_load);
+        check("cache hit matches nslices + pool_len", c1->nslices == c2->nslices && c1->pool_len == c2->pool_len, cbuf);
+        int same = 1;
+        for (int i = 0; i < c2->pool_len; i++) if (c1->pool[i] != c2->pool[i]) { same = 0; break; }
+        check("cache pool bytes identical", same, NULL);
+        check("cache load faster than analysis", t_load < t_build, NULL);
+    }
+    corpus_index_free(c1); corpus_index_free(c2);
     printf("\n%d passed, %d failed\n", npass, nfail);
     return nfail ? 1 : 0;
 }

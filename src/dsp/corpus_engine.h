@@ -31,11 +31,16 @@ typedef struct {
  *   slice_mode: 0 = onset, 1 = fixed-grain (grain length = max_len).
  *   min_len/max_len: slice clamps in samples. sil_gate: RMS floor.
  *   pool_cap_samples: hard cap on pooled audio (stops adding when full — v1, no eviction).
+ *   cache_dir: if non-NULL, an on-disk index cache lives here (keyed by folder path;
+ *     validated by a signature over file mtimes/sizes + slicing params). A hit loads
+ *     the index directly (skips decode+analysis); a miss analyses then writes the cache.
+ *   force_rescan: if non-zero, ignore any cached index and rebuild (still rewrites the cache).
  *   progress: optional 0..100 counter updated as files are processed.
  * Returns a heap index (free with corpus_index_free), or NULL if no audio / OOM. */
 corpus_index_t *corpus_index_build(const char *folder, int sr,
                                    int slice_mode, int min_len, int max_len,
                                    float sil_gate, int pool_cap_samples,
+                                   const char *cache_dir, int force_rescan,
                                    volatile int *progress);
 
 void corpus_index_free(corpus_index_t *ix);
