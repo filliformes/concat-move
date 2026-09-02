@@ -271,8 +271,37 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
     concat_t *inst = (concat_t *)instance;
     if (!inst || !key) return -1;
 
-    /* chain_params lives in module.json (single source of truth) → -1 fallback. */
-    if (strcmp(key, "chain_params") == 0) return -1;
+    /* Serve chain_params from the DSP (granny/breakbeat pattern) — the module.json
+     * fallback does not reliably deliver param metadata to the knob grid, so a knob
+     * with no metadata renders as a float 0..1. corpus_file is declared filepath here
+     * so the grid draws it as a browser cell, not a float knob. (~2.7 KB < buffer.) */
+    if (strcmp(key, "chain_params") == 0) {
+        int n = 0;
+#define CP_EMIT(...) do { if (n < buf_len) n += snprintf(buf + n, buf_len - n, __VA_ARGS__); } while (0)
+        CP_EMIT("[{\"key\":\"corpus_file\",\"name\":\"Source\",\"type\":\"filepath\","
+                "\"root\":\"/data/UserData\",\"filter\":[\".wav\",\".flac\",\".mp3\"]}");
+        for (int i = 0; i < NPARAMS; i++) {
+            const pdef_t *p = &PARAMS[i];
+            CP_EMIT(",{\"key\":\"%s\",\"name\":\"%s\",", p->key, p->label);
+            if (p->type == T_ENUM) {
+                CP_EMIT("\"type\":\"enum\",\"options\":[");
+                for (int j = 0; j < p->nopts; j++) CP_EMIT("%s\"%s\"", j ? "," : "", p->opts[j]);
+                CP_EMIT("]}");
+            } else if (p->type == T_INT) {
+                CP_EMIT("\"type\":\"int\",\"min\":%d,\"max\":%d", (int)p->min, (int)p->max);
+                if (p->unit) CP_EMIT(",\"unit\":\"%s\"", p->unit);
+                CP_EMIT("}");
+            } else {
+                CP_EMIT("\"type\":\"float\",\"min\":%g,\"max\":%g,\"step\":%g",
+                        (double)p->min, (double)p->max, (double)p->step);
+                if (p->unit) CP_EMIT(",\"unit\":\"%s\"", p->unit);
+                CP_EMIT("}");
+            }
+        }
+        CP_EMIT("]");
+#undef CP_EMIT
+        return (n >= buf_len) ? (buf_len - 1) : n;
+    }
 
     /* Sound generators MUST return ui_hierarchy from get_param. */
     if (strcmp(key, "ui_hierarchy") == 0) {
