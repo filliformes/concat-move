@@ -513,13 +513,37 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
     concat_t *inst = (concat_t *)instance;
     if (!inst || !key) return -1;
 
-    /* chain_params: return -1 so the host reads them from module.json instead. The
-     * DSP-served path is capped by the ~4 KB shim buffer (we were at 4065 B / 47
-     * params — one param from truncation); module.json is file-parsed with no such
-     * limit (host cap 256 params, v0.9.0+). module.json's chain_params is the single
-     * source of truth and MUST stay complete + in sync with the param table.
-     * NOTE: module.json is cached at startup — a POWER-CYCLE is required to reload it. */
-    if (strcmp(key, "chain_params") == 0) return -1;
+    /* chain_params MUST be DSP-served: the module.json (-1) fallback does NOT render the
+     * filepath Source picker on this device (verified 2026-09-02 — it shows a bare float
+     * even after a power-cycle). Cost: the ~4 KB shim buffer caps this JSON at ~47 params.
+     * corpus_file is the filepath cell. Keep module.json chain_params in sync as a fallback. */
+    if (strcmp(key, "chain_params") == 0) {
+        int n = 0;
+#define CP_EMIT(...) do { if (n < buf_len) n += snprintf(buf + n, buf_len - n, __VA_ARGS__); } while (0)
+        CP_EMIT("[{\"key\":\"corpus_file\",\"name\":\"Source\",\"type\":\"filepath\","
+                "\"root\":\"/data/UserData/UserLibrary\",\"filter\":[\".wav\",\".flac\",\".mp3\"]}");
+        for (int i = 0; i < NPARAMS; i++) {
+            const pdef_t *p = &PARAMS[i];
+            CP_EMIT(",{\"key\":\"%s\",\"name\":\"%s\",", p->key, p->label);
+            if (p->type == T_ENUM) {
+                CP_EMIT("\"type\":\"enum\",\"options\":[");
+                for (int j = 0; j < p->nopts; j++) CP_EMIT("%s\"%s\"", j ? "," : "", p->opts[j]);
+                CP_EMIT("]}");
+            } else if (p->type == T_INT) {
+                CP_EMIT("\"type\":\"int\",\"min\":%d,\"max\":%d", (int)p->min, (int)p->max);
+                if (p->unit) CP_EMIT(",\"unit\":\"%s\"", p->unit);
+                CP_EMIT("}");
+            } else {
+                CP_EMIT("\"type\":\"float\",\"min\":%g,\"max\":%g,\"step\":%g",
+                        (double)p->min, (double)p->max, (double)p->step);
+                if (p->unit) CP_EMIT(",\"unit\":\"%s\"", p->unit);
+                CP_EMIT("}");
+            }
+        }
+        CP_EMIT("]");
+#undef CP_EMIT
+        return (n >= buf_len) ? (buf_len - 1) : n;
+    }
 
     /* Sound generators MUST return ui_hierarchy from get_param. */
     if (strcmp(key, "ui_hierarchy") == 0) {
