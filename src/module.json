@@ -25,6 +25,7 @@
             "corpus_file", "pool_mb", "rescan", "slice_mode", "min_slice_ms", "max_slice_ms", "analyze", "silence_gate",
             {"level": "map", "label": "Map"},
             {"level": "grain", "label": "Grain"},
+            {"level": "shape", "label": "Shape"},
             {"level": "play", "label": "Play"},
             {"level": "out", "label": "Out"}
           ]
@@ -36,18 +37,23 @@
         },
         "grain": {
           "name": "Grain",
-          "knobs": ["density", "grain_size", "grain_env", "pitch", "pitch_jitter", "pan_spread", "reverse"],
-          "params": ["density", "grain_size", "grain_env", "pitch", "pitch_jitter", "pan_spread", "reverse"]
+          "knobs": ["density", "grain_size", "grain_env", "pitch", "pan_spread", "grain_rand", "reverse", "pitch_jitter"],
+          "params": ["density", "grain_size", "grain_env", "pitch", "pan_spread", "grain_rand", "reverse", "pitch_jitter"]
+        },
+        "shape": {
+          "name": "Shape",
+          "knobs": ["amp_atk", "amp_dec", "amp_sus", "amp_rel", "filt_amt", "filt_atk", "filt_dec", "filt_sus"],
+          "params": ["amp_atk", "amp_dec", "amp_sus", "amp_rel", "filt_amt", "filt_atk", "filt_dec", "filt_sus"]
         },
         "play": {
           "name": "Play",
-          "knobs": ["play_mode", "input_src", "mosaic_rate", "note_match", "pressure", "press_amt"],
-          "params": ["play_mode", "input_src", "mosaic_rate", "note_match", "pressure", "press_amt"]
+          "knobs": ["play_mode", "input_src", "mosaic_rate", "note_match", "pressure", "press_amt", "press_inv", "poly"],
+          "params": ["play_mode", "input_src", "mosaic_rate", "note_match", "pressure", "press_amt", "press_inv", "poly"]
         },
         "out": {
           "name": "Out",
-          "knobs": ["filter", "cutoff", "resonance", "sat", "dry_mix", "volume", "width"],
-          "params": ["filter", "cutoff", "resonance", "sat", "dry_mix", "volume", "width"]
+          "knobs": ["cutoff", "resonance", "sat", "dry_mix", "volume", "width"],
+          "params": ["cutoff", "resonance", "sat", "dry_mix", "volume", "width"]
         }
       }
     },

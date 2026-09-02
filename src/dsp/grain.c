@@ -9,9 +9,12 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+static void build_env_tables(void);   /* fwd — defined after grain_env_math */
+
 void grain_engine_init(grain_engine_t *ge) {
     memset(ge, 0, sizeof(*ge));
     ge->rng = 0x2545F491u;
+    build_env_tables();
 }
 
 static float g_rand(grain_engine_t *ge) {        /* uniform 0..1 */
@@ -21,7 +24,7 @@ static float g_rand(grain_engine_t *ge) {        /* uniform 0..1 */
     return (x >> 8) * (1.0f / 16777216.0f);
 }
 
-static float grain_env_val(int env, int age, int glen) {
+static float grain_env_math(int env, int age, int glen) {
     const float PI = (float)M_PI;
     float x = glen > 0 ? (float)age / glen : 0.0f;     /* 0..1 */
     if (x < 0.0f) x = 0.0f; else if (x > 1.0f) x = 1.0f;
@@ -54,15 +57,33 @@ static float grain_env_val(int env, int age, int glen) {
     }
 }
 
+/* Precomputed envelope tables — avoids per-sample transcendentals with 128 voices. */
+static float g_env_tables[8][GRAIN_ENV_TABLE];
+static int   g_env_built = 0;
+static void build_env_tables(void) {
+    if (g_env_built) return;
+    for (int e = 0; e < 8; e++)
+        for (int i = 0; i < GRAIN_ENV_TABLE; i++)
+            g_env_tables[e][i] = grain_env_math(e, i, GRAIN_ENV_TABLE - 1);
+    g_env_built = 1;
+}
+static inline float grain_env_val(int env, int age, int glen) {
+    if (env < 0 || env > 7) env = 0;
+    float x = glen > 0 ? (float)age / glen : 0.0f;
+    if (x < 0.0f) x = 0.0f; else if (x > 1.0f) x = 1.0f;
+    return g_env_tables[env][(int)(x * (GRAIN_ENV_TABLE - 1))];
+}
+
 static void spawn_grain(grain_engine_t *ge, corpus_index_t *ix,
                         const float *target, const float *weight,
                         const grain_params_t *gp, int sr) {
     int sel = query_select(&ix->query, target, weight, gp->k_nearest, gp->radius);
     if (sel < 0 || sel >= ix->nslices) return;
 
-    /* Pick a free voice, else steal the oldest. */
+    /* Pick a free voice within the polyphony cap, else steal the oldest. */
+    int nv = gp->max_voices; if (nv < 1) nv = 1; if (nv > GRAIN_VOICES) nv = GRAIN_VOICES;
     int vi = -1, oldest = -1, oldest_age = -1;
-    for (int v = 0; v < GRAIN_VOICES; v++) {
+    for (int v = 0; v < nv; v++) {
         if (!ge->voices[v].active) { vi = v; break; }
         if (ge->voices[v].age > oldest_age) { oldest_age = ge->voices[v].age; oldest = v; }
     }
@@ -73,7 +94,9 @@ static void spawn_grain(grain_engine_t *ge, corpus_index_t *ix,
     g->audio = &ix->pool[sl->pool_off];
     g->len   = sl->len;
 
-    int glen = (int)(gp->grain_size_ms * 0.001f * sr);   /* grain-lock length at spawn */
+    float gms = gp->grain_size_ms;                        /* random size spread per grain */
+    if (gp->grain_rand > 0.0f) gms *= 1.0f + (g_rand(ge) * 2.0f - 1.0f) * gp->grain_rand;
+    int glen = (int)(gms * 0.001f * sr);                 /* grain-lock length at spawn */
     if (glen > g->len) glen = g->len;
     if (glen < 1) glen = 1;
     g->grain_len = glen;

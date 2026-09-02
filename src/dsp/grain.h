@@ -11,7 +11,8 @@
 #include <stdint.h>
 #include "corpus_engine.h"
 
-#define GRAIN_VOICES 24
+#define GRAIN_VOICES 128
+#define GRAIN_ENV_TABLE 1024
 
 typedef struct {
     int            active;
@@ -35,11 +36,13 @@ typedef struct {
     int   k_nearest;   float radius;
     float density;                 /* grains/s */
     float grain_size_ms;
-    int   grain_env;               /* 0 Hann, 1 Tukey, 2 Tri */
+    float grain_rand;              /* 0..1 random size spread per grain */
+    int   grain_env;               /* 0 Hann .. 7 Blackman */
     float pitch_semi, pitch_jitter;
     float pan_spread, reverse_prob;
     float volume, width;
     float target_hz;               /* Notes mode: retune each grain to this pitch (0 = off) */
+    int   max_voices;              /* polyphony cap (1..GRAIN_VOICES) */
 } grain_params_t;
 
 void grain_engine_init(grain_engine_t *ge);
