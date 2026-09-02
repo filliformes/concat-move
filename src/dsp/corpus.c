@@ -36,6 +36,7 @@ void concat_slice_descriptor(analysis_t *a, const float *slice, int len, float *
     rstat_init(&s_cent); rstat_init(&s_flat); rstat_init(&s_zcr);
     rstat_init(&s_loud); rstat_init(&s_conf);
     float peak = 0.0f; int npitch = 0, nframes = 0;
+    int yin_step = (len / hop) / 8; if (yin_step < 1) yin_step = 1;   /* sample YIN ~8 frames/slice */
 
     for (int p = 0; p < len; p += hop) {
         int copy = len - p; if (copy > N) copy = N;
@@ -50,9 +51,11 @@ void concat_slice_descriptor(analysis_t *a, const float *slice, int len, float *
         rstat_add(&s_flat, analysis_flatness(a, mag));
         rstat_add(&s_zcr,  analysis_zcr(&slice[p], copy));
         rstat_add(&s_loud, analysis_rms(&slice[p], copy));
-        float conf; float pit = analysis_yin(a, frame, 50.0f, 2000.0f, &conf);
-        rstat_add(&s_conf, conf);
-        if (pit > 0.0f) pitches[npitch++] = pit;
+        if (nframes % yin_step == 0) {           /* YIN is the costliest kernel — sample, don't run every frame */
+            float conf; float pit = analysis_yin(a, frame, 50.0f, 2000.0f, &conf);
+            rstat_add(&s_conf, conf);
+            if (pit > 0.0f) pitches[npitch++] = pit;
+        }
         for (int i = 0; i < copy; i++) { float v = fabsf(slice[p + i]); if (v > peak) peak = v; }
         nframes++;
         if (copy < N) break;                             /* last (partial) frame */
