@@ -191,6 +191,7 @@ typedef struct {
     int    amp_stage;       /* per-note amp ADSR (Shape amp params) */
     float  amp_level;
     double accum;           /* per-note grain scheduler */
+    int    gen;             /* bumped each note-on; grains of an old gen are muted on slot reuse */
 } note_voice_t;
 
 typedef struct {
@@ -210,6 +211,7 @@ typedef struct {
     /* Engine */
     grain_engine_t   ge;                 /* render-thread grain cloud */
     corpus_index_t  *index;              /* current corpus (atomic acquire/release) */
+    corpus_index_t  *ge_ix;              /* index the live grains' audio points into (flush on change) */
     pthread_t        analyst;            /* single worker; builds the index off-thread */
     pthread_mutex_t  lock;
     pthread_cond_t   cond;
@@ -430,7 +432,7 @@ static void on_midi(void *instance, const uint8_t *msg, int len, int source) {
         if (slot < 0) slot = 0;              /* steal voice 0 */
         note_voice_t *nv = &inst->notes[slot];
         nv->active = 1; nv->held = 1; nv->note = d1; nv->vel = d2 / 127.0f;
-        nv->amp_stage = 1; nv->amp_level = 0.0f; nv->accum = 0.0;
+        nv->amp_stage = 1; nv->amp_level = 0.0f; nv->accum = 0.0; nv->gen++;   /* supersede any old grains on this slot */
         inst->note_active = 1; inst->midi_note = d1; inst->velocity = d2 / 127.0f;
         inst->last_pad_note = d1; inst->pads_held++;      /* Map-mode cluster jump */
     } else if (status == 0x80 || (status == 0x90 && d2 == 0)) {  /* Note Off → release the voice */
@@ -657,6 +659,10 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
     corpus_index_t *ix = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE);
     if (!ix || ix->nslices == 0) { memset(out_lr, 0, sizeof(int16_t) * 2 * frames); return; }
 
+    /* Corpus hot-swapped → flush grains before their pool pointers dangle (the analyst
+     * frees the old pool ~60 ms after the swap, but grains can live up to grain_len). */
+    if (ix != inst->ge_ix) { grain_flush(&inst->ge); inst->ge_ix = ix; }
+
     /* Repeat-avoid depth can change live. */
     query_set_repeat_avoid(&ix->query, (int)inst->pv[P_REPEAT_AVOID]);
 
@@ -757,7 +763,8 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
              * The amp envelope is passed LIVE (&nv->amp_level) so this note's grains fade together
              * on release — even long grains — instead of playing out at their spawn gain. */
             float ev = 1.0f - inst->pv[P_VEL_AMT] * (1.0f - nv->vel);
-            grain_schedule(&inst->ge, ix, t, w, &gp, ev, &nv->amp_level, target_hz, &nv->accum, frames, 44100);
+            grain_amp_t ga = { &nv->amp_level, &nv->gen, nv->gen };
+            grain_schedule(&inst->ge, ix, t, w, &gp, ev, &ga, target_hz, &nv->accum, frames, 44100);
         }
     } else if (pm == 2 && inst->host && inst->mono_analysis) {   /* Mosaic: target from live line/mic input */
         int16_t *ain = (int16_t *)(inst->host->mapped_memory + inst->host->audio_in_offset);

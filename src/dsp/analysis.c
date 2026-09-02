@@ -51,6 +51,8 @@ static double mel2hz(double m) { return 700.0 * (exp(m / 1127.01048) - 1.0); }
 
 analysis_t *analysis_create(int sr, int fft_size, int n_mel, int n_mfcc) {
     if (n_mel > 64) n_mel = 64;                    /* logmel stack bound */
+    if (n_mfcc > n_mel) n_mfcc = n_mel;            /* can't exceed mel bands */
+    if (n_mfcc > 64) n_mfcc = 64;                  /* caller mfcc[] buffers are sized ≤64 */
     analysis_t *a = (analysis_t *)calloc(1, sizeof(analysis_t));
     if (!a) return NULL;
     a->sr = sr; a->fft_size = fft_size; a->n_bins = fft_size / 2 + 1;

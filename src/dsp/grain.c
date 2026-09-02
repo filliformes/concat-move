@@ -17,6 +17,11 @@ void grain_engine_init(grain_engine_t *ge) {
     build_env_tables();
 }
 
+void grain_flush(grain_engine_t *ge) {
+    for (int v = 0; v < GRAIN_VOICES; v++) ge->voices[v].active = 0;
+    ge->sched_accum = 0.0;
+}
+
 static float g_rand(grain_engine_t *ge) {        /* uniform 0..1 */
     unsigned x = ge->rng ? ge->rng : 0x9e3779b9u;
     x ^= x << 13; x ^= x >> 17; x ^= x << 5;
@@ -76,9 +81,9 @@ static inline float grain_env_val(int env, int age, int glen) {
 
 static void spawn_grain(grain_engine_t *ge, corpus_index_t *ix,
                         const float *target, const float *weight,
-                        const grain_params_t *gp, float gain, const float *amp, float target_hz, int sr) {
+                        const grain_params_t *gp, float gain, const grain_amp_t *amp, float target_hz, int sr) {
     int sel = query_select(&ix->query, target, weight, gp->k_nearest, gp->radius);
-    if (sel < 0 || sel >= ix->nslices) return;
+    if (sel < 0 || sel >= ix->nslices || ix->slices[sel].len < 1) return;   /* need a playable slice */
 
     /* Pick a free voice within the polyphony cap, else steal the grain NEAREST ITS END
      * (smallest samples-remaining) — it is already inside its window's fade, so cutting
@@ -104,13 +109,15 @@ static void spawn_grain(grain_engine_t *ge, corpus_index_t *ix,
     g->grain_len = glen;
     g->age  = 0;
     g->gain = gain;
-    g->amp  = amp;
+    g->amp    = amp ? amp->level : NULL;
+    g->ampgen = amp ? amp->gen   : NULL;
+    g->gen    = amp ? amp->gen_val : 0;
 
     /* A grain that outlasts its slice loops it; crossfade the loop seam to kill the click. */
     if (glen > g->len) {
         int xf = (int)(0.020f * sr);              /* 20 ms seam crossfade */
-        if (xf > g->len / 2) xf = g->len / 2;     /* short slice → cap to half its length */
-        if (xf < 1) xf = 1;
+        if (xf > g->len / 2) xf = g->len / 2;     /* short slice → cap to half (may be 0: no seam xfade,
+                                                     keeps period = len ≥ 1 so the loop can't hang) */
         g->xfade = xf;
     } else {
         g->xfade = 0;                             /* fits the slice → straight read, window handles edges */
@@ -140,7 +147,7 @@ static inline int16_t clamp16(float x) {
 
 void grain_schedule(grain_engine_t *ge, corpus_index_t *ix,
                     const float *target, const float *weight, const grain_params_t *gp,
-                    float gain, const float *amp, float target_hz, double *accum, int frames, int sr) {
+                    float gain, const grain_amp_t *amp, float target_hz, double *accum, int frames, int sr) {
     if (!ix || ix->nslices == 0) return;
     *accum += (double)gp->density * frames / sr;
     while (*accum >= 1.0) { spawn_grain(ge, ix, target, weight, gp, gain, amp, target_hz, sr); *accum -= 1.0; }
@@ -153,7 +160,9 @@ void grain_mix(grain_engine_t *ge, const grain_params_t *gp, int16_t *out_lr, in
         for (int v = 0; v < GRAIN_VOICES; v++) {
             grain_t *g = &ge->voices[v];
             if (!g->active) continue;
-            int len = g->len, xf = g->xfade, period = len - xf;   /* loop period (== len when xf==0) */
+            if (g->ampgen && *g->ampgen != g->gen) { g->active = 0; continue; }  /* voice reused → not our note */
+            int len = g->len; if (len < 1) { g->active = 0; continue; }
+            int xf = g->xfade, period = len - xf; if (period < 1) period = 1;   /* guard: never 0 (hang/÷0) */
             double p = g->pos;
 
             int ip = (int)p % len; if (ip < 0) ip += len;   /* modulo-safe even if pos ran past len */
@@ -176,9 +185,11 @@ void grain_mix(grain_engine_t *ge, const grain_params_t *gp, int16_t *out_lr, in
             float env = grain_env_val(gp->grain_env, g->age, g->grain_len);
             /* Guaranteed edge declick: force a true-zero fade in/out for every window
              * (Gaussian/Expodec/etc. don't reach 0 at their ends → they'd click otherwise). */
-            const int decl = 32;   /* ~0.7 ms */
-            if (g->age < decl)                          env *= (float)g->age / decl;
-            else if (g->age >= g->grain_len - decl)     env *= (float)(g->grain_len - 1 - g->age) / decl;  /* → 0 on the last sample */
+            int decl = 32; if (decl > g->grain_len / 2) decl = g->grain_len / 2;   /* short grains: shrink so fade-out still fires */
+            if (decl > 0) {
+                if (g->age < decl)                        env *= (float)g->age / decl;
+                else if (g->age >= g->grain_len - decl)   env *= (float)(g->grain_len - 1 - g->age) / decl;  /* → 0 on the last sample */
+            }
             samp *= env * g->gain * (g->amp ? *g->amp : 1.0f);   /* live note-voice envelope */
             l += samp * g->panl;
             r += samp * g->panr;

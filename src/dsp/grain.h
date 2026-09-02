@@ -27,8 +27,14 @@ typedef struct {
     float          gain;       /* static per-grain gain (velocity etc.), frozen at spawn */
     const float   *amp;        /* LIVE envelope level (note-voice), NULL = constant 1 — lets a
                                 * note's grains fade together on release regardless of length */
+    const int     *ampgen;     /* voice generation; if it moves past `gen` the voice was reused → mute */
+    int            gen;        /* voice generation captured at spawn */
     int            reverse;
 } grain_t;
+
+/* Live per-note amplitude source for a scheduled grain. `gen`/`gen_val` guard against a
+ * freed note-voice slot being reused by a new note (would else "ghost re-amplify" old grains). */
+typedef struct { const float *level; const int *gen; int gen_val; } grain_amp_t;
 
 typedef struct {
     grain_t  voices[GRAIN_VOICES];
@@ -51,12 +57,16 @@ typedef struct {
 
 void grain_engine_init(grain_engine_t *ge);
 
+/* Deactivate all grains (their audio pointers reference a specific corpus pool).
+ * Call before the pool they point into is freed — e.g. on an index hot-swap. */
+void grain_flush(grain_engine_t *ge);
+
 /* Schedule grains for ONE voice/target into the shared grain pool. `accum` is that
  * voice's fractional grain scheduler; `gain` scales its grains (a note-voice passes
  * its envelope level); `target_hz` > 0 retunes each grain to that pitch. */
 void grain_schedule(grain_engine_t *ge, corpus_index_t *ix,
                     const float *target, const float *weight, const grain_params_t *gp,
-                    float gain, const float *amp, float target_hz, double *accum, int frames, int sr);
+                    float gain, const grain_amp_t *amp, float target_hz, double *accum, int frames, int sr);
 
 /* Render every active grain into out_lr (grain loops its slice; applies width + volume). */
 void grain_mix(grain_engine_t *ge, const grain_params_t *gp, int16_t *out_lr, int frames, int sr);

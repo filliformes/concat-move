@@ -99,9 +99,11 @@ int query_select(query_t *q, const float *t, const float *w, int k, float radius
     if (nb == 0) {                          /* every candidate is ring-forbidden: nearest overall */
         int best = -1; float bestd = 1e30f;
         for (int i = 0; i < q->nslices; i++) {
+            if (i == q->last_sel) continue; /* avoid an immediate repeat when possible */
             float d = wdist2(t, w, &q->qn[i * NDESC]);
             if (d < bestd) { bestd = d; best = i; }
         }
+        if (best < 0) best = q->last_sel;   /* only last_sel is available (tiny corpus) */
         if (best >= 0) { push_ring(q, best); q->last_sel = best; }
         return best;
     }

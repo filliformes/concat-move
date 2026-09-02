@@ -75,7 +75,8 @@ static corpus_index_t *cache_load(const char *cache_dir, const char *folder,
     corpus_index_t *ix = (corpus_index_t *)calloc(1, sizeof(corpus_index_t));
     if (!ix) { fclose(fp); return NULL; }
     ix->nslices = hd.nslices; ix->pool_len = hd.pool_len; ix->pool_cap = hd.pool_len;
-    ix->kclusters = hd.kclusters; ix->pca_ok = hd.pca_ok;
+    ix->kclusters = (hd.kclusters > 0 && hd.kclusters <= 64) ? hd.kclusters : 0;   /* clamp (corrupt-cache guard) */
+    ix->pca_ok = hd.pca_ok ? 1 : 0;
     ix->pool   = (int16_t *)malloc(sizeof(int16_t) * (size_t)hd.pool_len);
     ix->slices = (cslice_t *)malloc(sizeof(cslice_t) * (size_t)hd.nslices);
     ix->qn     = (float *)malloc(sizeof(float) * (size_t)NDESC * hd.nslices);
@@ -98,6 +99,11 @@ static corpus_index_t *cache_load(const char *cache_dir, const char *folder,
            & (fread(ix->pool,   sizeof(int16_t), hd.pool_len, fp) == (size_t)hd.pool_len);
     fclose(fp);
     if (!ok) { corpus_index_free(ix); return NULL; }
+    /* Validate every slice's pool range (a corrupt-but-header-valid cache would else
+     * make the render thread read out of the pool). */
+    for (int i = 0; i < ix->nslices; i++)
+        if (ix->slices[i].pool_off < 0 || ix->slices[i].len < 1 ||
+            ix->slices[i].pool_off + ix->slices[i].len > ix->pool_len) { corpus_index_free(ix); return NULL; }
     query_init(&ix->query, ix->qn, ix->nslices);
     return ix;
 }
@@ -109,7 +115,10 @@ static void cache_store(const char *cache_dir, const char *folder, uint64_t sig,
     char tmp[620]; snprintf(tmp, sizeof(tmp), "%s.tmp", path);
     FILE *fp = fopen(tmp, "wb");
     if (!fp) return;
-    cache_hdr_t hd = { CACHE_MAGIC, CACHE_VER, sig, NDESC, ix->nslices, ix->pool_len, ix->kclusters, ix->pca_ok };
+    cache_hdr_t hd; memset(&hd, 0, sizeof hd);   /* zero padding — don't write indeterminate bytes */
+    hd.magic = CACHE_MAGIC; hd.ver = CACHE_VER; hd.sig = sig;
+    hd.ndesc = NDESC; hd.nslices = ix->nslices; hd.pool_len = ix->pool_len;
+    hd.kclusters = ix->kclusters; hd.pca_ok = ix->pca_ok;
     size_t nq = (size_t)NDESC * ix->nslices, nc = (size_t)NDESC * (ix->kclusters > 0 ? ix->kclusters : 0);
     int ok = (fwrite(&hd, sizeof(hd), 1, fp) == 1)
            & (fwrite(ix->median, sizeof(float), NDESC, fp) == (size_t)NDESC)
@@ -175,7 +184,7 @@ static void corpus_kmeans(corpus_index_t *ix) {
         }
         for (int k = 0; k < K; k++) {
             if (cnt[k] > 0) { float inv = 1.0f / cnt[k]; for (int j = 0; j < NDESC; j++) cen[k * NDESC + j] *= inv; }
-            else memcpy(&cen[k * NDESC], &ix->qn[(rand() % n) * NDESC], sizeof(float) * NDESC);  /* reseed empty */
+            else memcpy(&cen[k * NDESC], &ix->qn[((it * 2654435761u + k * 40503u) % (unsigned)n) * NDESC], sizeof(float) * NDESC);  /* deterministic reseed */
         }
     }
     free(cnt); free(asg);
@@ -223,6 +232,14 @@ static void corpus_pca(corpus_index_t *ix) {
     double l1 = 0.0; { double w[NDESC]; for (int j = 0; j < d; j++) { double s = 0; for (int k = 0; k < d; k++) s += C[j * d + k] * v1[k]; w[j] = s; } for (int j = 0; j < d; j++) l1 += v1[j] * w[j]; }
     power_iter(C, d, v1, l1, v2);
     free(C);
+
+    /* Gram-Schmidt: force v2 ⊥ v1 exactly (robust when the 2nd axis is near-degenerate —
+     * power iteration on a rank-deficient deflated covariance can return a non-orthogonal
+     * guess). If v2 collapses to ~0, the projection range does too → pca_ok stays 0. */
+    { double dot = 0.0; for (int j = 0; j < d; j++) dot += v1[j] * v2[j];
+      double n2 = 0.0; for (int j = 0; j < d; j++) { v2[j] -= dot * v1[j]; n2 += v2[j] * v2[j]; }
+      n2 = sqrt(n2);
+      if (n2 > 1e-9) for (int j = 0; j < d; j++) v2[j] /= n2; else for (int j = 0; j < d; j++) v2[j] = 0.0; }
 
     float mn[2] = { 1e30f, 1e30f }, mx[2] = { -1e30f, -1e30f };
     for (int i = 0; i < n; i++) {
