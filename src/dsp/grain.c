@@ -61,6 +61,7 @@ static void spawn_grain(grain_engine_t *ge, corpus_index_t *ix,
 
     float jit = 1.0f + (g_rand(ge) * 2.0f - 1.0f) * gp->pitch_jitter * 0.5f;
     g->rate = powf(2.0f, gp->pitch_semi / 12.0f) * jit;
+    if (gp->target_hz > 0.0f && sl->pitch > 0.0f) g->rate *= gp->target_hz / sl->pitch;   /* Notes: retune to the played note */
     if (g->rate < 0.01f) g->rate = 0.01f;
 
     g->reverse = (g_rand(ge) < gp->reverse_prob) ? 1 : 0;

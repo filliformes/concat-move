@@ -39,6 +39,7 @@ typedef struct {
     float pitch_semi, pitch_jitter;
     float pan_spread, reverse_prob;
     float volume, width;
+    float target_hz;               /* Notes mode: retune each grain to this pitch (0 = off) */
 } grain_params_t;
 
 void grain_engine_init(grain_engine_t *ge);

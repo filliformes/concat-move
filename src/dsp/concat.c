@@ -44,6 +44,20 @@
 #include "grain.h"
 
 #define SAMPLE_RATE 44100.0f
+#define ANALYSIS_N  1024
+
+/* Minimal view of host_api_v1_t — fields up to audio_in_offset in the exact order
+ * from schwung src/host/plugin_api_v1.h, so mapped_memory/audio_in_offset land at
+ * the right offsets. We read only the live line/mic input for Mosaic mode. */
+typedef struct {
+    uint32_t api_version;
+    int      sample_rate;
+    int      frames_per_block;
+    uint8_t *mapped_memory;
+    int      audio_out_offset;
+    int      audio_in_offset;
+} concat_host_t;
+static const concat_host_t *g_host = NULL;
 
 /* ── Parameter table (table-driven get/set + page-aware knob overlay) ───────── */
 
@@ -160,6 +174,14 @@ typedef struct {
     int              a_slice_mode, a_min_len, a_max_len, a_pool_samples;  /* snapshot at arm */
     float            a_sil;
     volatile int     progress;           /* 0..100, served by get_param("analyze") */
+
+    /* Mosaic mode: live-input descriptor extraction (render thread) */
+    const concat_host_t *host;
+    analysis_t          *mono_analysis;
+    float                in_frame[ANALYSIS_N];
+    int                  in_fill;
+    float                mosaic_t[NDESC], mosaic_w[NDESC];
+    int                  mosaic_ready;
 } concat_t;
 
 static void set_param(void *instance, const char *key, const char *val);   /* fwd */
@@ -268,6 +290,8 @@ static void *create_instance(const char *module_dir, const char *json_defaults) 
     if (!inst) return NULL;
     for (int i = 0; i < NPARAMS; i++) inst->pv[i] = PARAMS[i].def;
     grain_engine_init(&inst->ge);
+    inst->host = g_host;
+    inst->mono_analysis = analysis_create(44100, ANALYSIS_N, 40, 13);   /* Mosaic target extraction */
     pthread_mutex_init(&inst->lock, NULL);
     pthread_cond_init(&inst->cond, NULL);
     if (pthread_create(&inst->analyst, NULL, analyst_thread, inst) == 0) inst->analyst_started = 1;
@@ -288,6 +312,7 @@ static void destroy_instance(void *instance) {
         pthread_mutex_destroy(&inst->lock);
         pthread_cond_destroy(&inst->cond);
     }
+    analysis_destroy(inst->mono_analysis);
     corpus_index_free(inst->index);
     free(inst);
 }
@@ -470,6 +495,32 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
 
 /* ── Audio ──────────────────────────────────────────────────────────────────── */
 
+/* Mosaic: reduce the accumulated live-input frame to a query target in the corpus
+ * descriptor space (means only; std/pitch left 0). Render-thread, no allocation. */
+static void compute_mosaic_target(concat_t *inst, corpus_index_t *ix) {
+    analysis_t *a = inst->mono_analysis;
+    if (!a) return;
+    float mag[ANALYSIS_N / 2 + 1];
+    float mfcc[13];
+    analysis_magnitude(a, inst->in_frame, mag);
+    analysis_mfcc(a, mag, mfcc);
+    float raw[NDESC];
+    memset(raw, 0, sizeof(raw));
+    for (int i = 0; i < 13; i++) raw[D_MFCC0_MEAN + i] = mfcc[i];
+    raw[D_CENTROID_MEAN] = analysis_centroid(a, mag);
+    raw[D_FLATNESS_MEAN] = analysis_flatness(a, mag);
+    raw[D_ZCR_MEAN]      = analysis_zcr(inst->in_frame, ANALYSIS_N);
+    raw[D_LOUD_MEAN]     = analysis_rms(inst->in_frame, ANALYSIS_N);
+    concat_robust_apply(raw, ix->median, ix->iqr, inst->mosaic_t);
+    for (int i = 0; i < NDESC; i++) inst->mosaic_w[i] = 0.0f;
+    for (int i = 0; i < 13; i++) inst->mosaic_w[D_MFCC0_MEAN + i] = 1.0f;   /* MFCC-weighted timbre match */
+    inst->mosaic_w[D_CENTROID_MEAN] = 1.0f;
+    inst->mosaic_w[D_FLATNESS_MEAN] = 1.0f;
+    inst->mosaic_w[D_ZCR_MEAN]      = 1.0f;
+    inst->mosaic_w[D_LOUD_MEAN]     = 1.0f;
+    inst->mosaic_ready = 1;
+}
+
 static void render_block(void *instance, int16_t *out_lr, int frames) {
     concat_t *inst = (concat_t *)instance;
     corpus_index_t *ix = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE);
@@ -490,12 +541,48 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
     gp.reverse_prob = inst->pv[P_REVERSE];
     gp.volume       = inst->pv[P_VOLUME];
     gp.width        = inst->pv[P_WIDTH];
+    gp.target_hz    = 0.0f;
 
-    /* v1: Map navigation (x_pos/y_pos over the two chosen descriptors). Notes /
-     * Mosaic targeting = TODO; they render the Map target for now. */
     float t[NDESC], w[NDESC];
-    query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
-                     inst->pv[P_X_POS], inst->pv[P_Y_POS], t, w);
+    int pm = (int)inst->pv[P_PLAY_MODE];        /* 0 Map, 1 Notes, 2 Mosaic */
+    if (pm == 1) {                              /* Notes: pitch-match + retune each grain to the note */
+        if (inst->note_active) {
+            float note_hz = 440.0f * powf(2.0f, (inst->midi_note - 69) / 12.0f)
+                                   * powf(2.0f, inst->pitch_bend / 12.0f);
+            memset(t, 0, sizeof(float) * NDESC);
+            memset(w, 0, sizeof(float) * NDESC);
+            if ((int)inst->pv[P_NOTE_MATCH] != 0 && ix->iqr[D_PITCH] > 1e-6f) {   /* Pitch/Zone: select nearest pitch */
+                t[D_PITCH] = (note_hz - ix->median[D_PITCH]) / ix->iqr[D_PITCH];
+                w[D_PITCH] = 1.0f;
+            } else {                             /* Off: keep the Map position, just retune */
+                query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
+                                 inst->pv[P_X_POS], inst->pv[P_Y_POS], t, w);
+            }
+            gp.target_hz = note_hz;
+            gp.volume   *= inst->velocity;
+        } else {
+            gp.density = 0.0f;                   /* no note held → spawn none, let grains decay */
+            memset(t, 0, sizeof(float) * NDESC);
+            memset(w, 0, sizeof(float) * NDESC);
+        }
+    } else if (pm == 2 && inst->host && inst->mono_analysis) {   /* Mosaic: target from live line/mic input */
+        int16_t *ain = (int16_t *)(inst->host->mapped_memory + inst->host->audio_in_offset);
+        for (int i = 0; i < frames; i++) {
+            float mono = (ain[i * 2] + ain[i * 2 + 1]) * (0.5f / 32768.0f);
+            if (inst->in_fill < ANALYSIS_N) inst->in_frame[inst->in_fill++] = mono;
+            if (inst->in_fill >= ANALYSIS_N) { compute_mosaic_target(inst, ix); inst->in_fill = 0; }
+        }
+        if (inst->mosaic_ready) {
+            memcpy(t, inst->mosaic_t, sizeof(float) * NDESC);
+            memcpy(w, inst->mosaic_w, sizeof(float) * NDESC);
+        } else {
+            query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
+                             inst->pv[P_X_POS], inst->pv[P_Y_POS], t, w);
+        }
+    } else {                                     /* Map */
+        query_target_map(&ix->query, desc_index((int)inst->pv[P_X_DESC]), desc_index((int)inst->pv[P_Y_DESC]),
+                         inst->pv[P_X_POS], inst->pv[P_Y_POS], t, w);
+    }
     grain_render(&inst->ge, ix, t, w, &gp, out_lr, frames, 44100);
 }
 
@@ -514,7 +601,7 @@ typedef struct {
 
 __attribute__((visibility("default")))
 plugin_api_v2_t *move_plugin_init_v2(const void *host) {
-    (void)host;
+    g_host = (const concat_host_t *)host;   /* for Mosaic live-input reads */
     static plugin_api_v2_t api = {
         .api_version      = 2,
         .create_instance  = create_instance,

@@ -71,6 +71,7 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
                 ix->slices[ix->nslices].pool_off = off;
                 ix->slices[ix->nslices].len = slen;
                 concat_slice_descriptor(a, src, slen, &raw[ix->nslices * NDESC]);
+                ix->slices[ix->nslices].pitch = raw[ix->nslices * NDESC + D_PITCH];  /* for Notes retune */
                 ix->nslices++;
                 ix->pool_len += slen;
             }

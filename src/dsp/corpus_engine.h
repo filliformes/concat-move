@@ -14,7 +14,7 @@
 #include "corpus.h"
 #include "query.h"
 
-typedef struct { int pool_off; int len; } cslice_t;   /* location of a slice in the pool */
+typedef struct { int pool_off; int len; float pitch; } cslice_t;  /* pool location + raw pitch (Hz, 0=unvoiced) */
 
 typedef struct {
     int16_t  *pool;        /* mono int16 audio, all retained slices concatenated */
