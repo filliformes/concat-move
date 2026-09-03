@@ -1,0 +1,183 @@
+{
+  "title": "Concat",
+  "children": [
+    {
+      "title": "What it is",
+      "lines": [
+        "A corpus concat-",
+        "enative synth.",
+        "Point it at a",
+        "folder of audio.",
+        "It slices, describes",
+        "every slice, and",
+        "plays grains from",
+        "wherever you are in",
+        "that timbre space.",
+        "",
+        "Or feed live input",
+        "and it mosaics it",
+        "through your corpus."
+      ]
+    },
+    {
+      "title": "First sound",
+      "lines": [
+        "1. Dive into Corpus",
+        "   from the root",
+        "   menu.",
+        "2. Select Source",
+        "   and pick any",
+        "   .wav/.flac/.mp3",
+        "   under UserLibrary.",
+        "3. Wait: Analyze",
+        "   counts to 100%.",
+        "   Slow first time,",
+        "   cached after.",
+        "4. Back to root.",
+        "   Hit the pads."
+      ]
+    },
+    {
+      "title": "Root page",
+      "lines": [
+        "The 8 knobs on the",
+        "root are for live",
+        "play:",
+        "",
+        "K1 X Pos",
+        "K2 Y Pos",
+        "K3 Density",
+        "K4 Grain Size",
+        "K5 Amp Atk",
+        "K6 Amp Rel",
+        "K7 Polyphony",
+        "K8 Filter"
+      ]
+    },
+    {
+      "title": "Play modes",
+      "lines": [
+        "Play page > Play",
+        "Mode:",
+        "",
+        "Notes (default):",
+        " each pad is a",
+        " polyphonic voice.",
+        "",
+        "Map: X/Y knobs +",
+        " LFO travel the",
+        " timbre map. Hold",
+        " a pad to jump to",
+        " a timbre cluster.",
+        "",
+        "Mosaic: line/mic",
+        " in gets re-voiced",
+        " through the corpus."
+      ]
+    },
+    {
+      "title": "Note Match",
+      "lines": [
+        "Play page > Note",
+        "(Notes mode only):",
+        "",
+        "Zone (default):",
+        " each pad plays a",
+        " different part of",
+        " the corpus, at",
+        " natural pitch.",
+        "",
+        "Pitch: nearest-",
+        " pitched slice,",
+        " retuned to note.",
+        "",
+        "Off: current map",
+        " point, retuned."
+      ]
+    },
+    {
+      "title": "Scope",
+      "lines": [
+        "Corpus > Scope:",
+        "",
+        "Folder (default):",
+        " picked file's",
+        " folder becomes",
+        " the corpus.",
+        "",
+        "File: that one",
+        " sample is the",
+        " whole corpus,",
+        " still onset-",
+        " sliced into many",
+        " pieces."
+      ]
+    },
+    {
+      "title": "Map + Mod",
+      "lines": [
+        "Map page:",
+        " X/Y Desc pick the",
+        " axes. Map Mode:",
+        " Raw (X/Y = your",
+        " descriptors) or",
+        " Learned (PCA plane",
+        " of the corpus).",
+        "",
+        "Mod page:",
+        " Follow = LFO or",
+        " Sequence. Sequence",
+        " locks LFO Rate to",
+        " the MIDI clock",
+        " (cycles per beat)."
+      ]
+    },
+    {
+      "title": "Filter",
+      "lines": [
+        "Out or root > K8",
+        "Filter: bipolar.",
+        "",
+        "Center 0.5:",
+        " bypass.",
+        "Left 0 to 0.5:",
+        " LP sweeping down",
+        " (dark).",
+        "Right 0.5 to 1:",
+        " HP sweeping up",
+        " (thin)."
+      ]
+    },
+    {
+      "title": "Pressure",
+      "lines": [
+        "Play page > Pressure",
+        "picks what pad",
+        "pressure modulates:",
+        "",
+        "Proximity, Density,",
+        "Bright, Sat, Pitch,",
+        "Grain, Jitter.",
+        "",
+        "Press Amt sets",
+        "depth. Vel Amount",
+        "sets how much pad",
+        "velocity scales",
+        "volume."
+      ]
+    },
+    {
+      "title": "Deploy notes",
+      "lines": [
+        "Any module update",
+        "needs a power-cycle:",
+        "Schwung caches the",
+        "manifest at startup.",
+        "",
+        "Save your set first:",
+        "a restart resets",
+        "unsaved knobs."
+      ]
+    }
+  ]
+}

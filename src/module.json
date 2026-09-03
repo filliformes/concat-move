@@ -21,25 +21,28 @@
         "root": {
           "name": "Concat",
           "knobs": [
-            "corpus_file",
-            "pool_mb",
-            "rescan",
-            "slice_mode",
-            "min_slice_ms",
-            "max_slice_ms",
-            "analyze",
-            "silence_gate"
+            "x_pos",
+            "y_pos",
+            "density",
+            "grain_size",
+            "amp_atk",
+            "amp_rel",
+            "poly",
+            "cutoff"
           ],
           "params": [
-            "corpus_file",
-            "src_scope",
-            "pool_mb",
-            "rescan",
-            "slice_mode",
-            "min_slice_ms",
-            "max_slice_ms",
-            "analyze",
-            "silence_gate",
+            "x_pos",
+            "y_pos",
+            "density",
+            "grain_size",
+            "amp_atk",
+            "amp_rel",
+            "poly",
+            "cutoff",
+            {
+              "level": "corpus",
+              "label": "Corpus"
+            },
             {
               "level": "map",
               "label": "Map"
@@ -185,6 +188,30 @@
             "volume",
             "width"
           ]
+        },
+        "corpus": {
+          "name": "Corpus",
+          "knobs": [
+            "corpus_file",
+            "pool_mb",
+            "rescan",
+            "slice_mode",
+            "min_slice_ms",
+            "max_slice_ms",
+            "analyze",
+            "silence_gate"
+          ],
+          "params": [
+            "corpus_file",
+            "src_scope",
+            "pool_mb",
+            "rescan",
+            "slice_mode",
+            "min_slice_ms",
+            "max_slice_ms",
+            "analyze",
+            "silence_gate"
+          ]
         }
       }
     },
@@ -273,8 +300,7 @@
         "type": "float",
         "min": 0,
         "max": 1,
-        "default": 0.02,
-        "step": 0.01
+        "default": 0.02
       },
       {
         "key": "map_mode",
@@ -321,8 +347,7 @@
         "type": "float",
         "min": 0,
         "max": 1,
-        "default": 0.5,
-        "step": 0.01
+        "default": 0.5
       },
       {
         "key": "y_pos",
@@ -330,8 +355,7 @@
         "type": "float",
         "min": 0,
         "max": 1,
-        "default": 0.5,
-        "step": 0.01
+        "default": 0.5
       },
       {
         "key": "radius",
@@ -339,8 +363,7 @@
         "type": "float",
         "min": 0,
         "max": 1,
-        "default": 0.15,
-        "step": 0.01
+        "default": 0.15
       },
       {
         "key": "k_nearest",
@@ -376,7 +399,11 @@
         "max": 10,
         "default": 0.2,
         "step": 0.01,
-        "unit": "Hz"
+        "unit": "Hz",
+        "viz": {
+          "group": "lfo",
+          "role": "rate"
+        }
       },
       {
         "key": "lfo_shape",
@@ -387,7 +414,11 @@
           "SineX",
           "SineY",
           "S&H"
-        ]
+        ],
+        "viz": {
+          "group": "lfo",
+          "role": "shape"
+        }
       },
       {
         "key": "density",
@@ -443,8 +474,7 @@
         "type": "float",
         "min": 0,
         "max": 1,
-        "default": 0,
-        "step": 0.01
+        "default": 0
       },
       {
         "key": "pan_spread",
@@ -452,8 +482,7 @@
         "type": "float",
         "min": 0,
         "max": 1,
-        "default": 0.3,
-        "step": 0.01
+        "default": 0.3
       },
       {
         "key": "reverse",
@@ -461,8 +490,7 @@
         "type": "float",
         "min": 0,
         "max": 1,
-        "default": 0,
-        "step": 0.01
+        "default": 0
       },
       {
         "key": "play_mode",
@@ -490,8 +518,7 @@
         "type": "float",
         "min": 0,
         "max": 1,
-        "default": 0,
-        "step": 0.01
+        "default": 0
       },
       {
         "key": "volume",
@@ -499,8 +526,7 @@
         "type": "float",
         "min": 0,
         "max": 1,
-        "default": 0.8,
-        "step": 0.01
+        "default": 0.8
       },
       {
         "key": "width",
@@ -508,8 +534,7 @@
         "type": "float",
         "min": 0,
         "max": 1,
-        "default": 1.0,
-        "step": 0.01
+        "default": 1.0
       },
       {
         "key": "sat",
@@ -517,8 +542,7 @@
         "type": "float",
         "min": 0,
         "max": 1,
-        "default": 0,
-        "step": 0.01
+        "default": 0
       },
       {
         "key": "cutoff",
@@ -527,7 +551,7 @@
         "min": 0,
         "max": 1,
         "default": 0.5,
-        "step": 0.01
+        "viz": false
       },
       {
         "key": "resonance",
@@ -536,7 +560,7 @@
         "min": 0,
         "max": 1,
         "default": 0,
-        "step": 0.01
+        "viz": false
       },
       {
         "key": "pressure",
@@ -559,8 +583,7 @@
         "type": "float",
         "min": 0,
         "max": 1,
-        "default": 1.0,
-        "step": 0.01
+        "default": 1.0
       },
       {
         "key": "vel_amt",
@@ -568,12 +591,11 @@
         "type": "float",
         "min": 0,
         "max": 1,
-        "default": 1.0,
-        "step": 0.01
+        "default": 1.0
       },
       {
         "key": "poly",
-        "name": "Poly",
+        "name": "Polyphony",
         "type": "int",
         "min": 1,
         "max": 128,
@@ -585,8 +607,7 @@
         "type": "float",
         "min": 0,
         "max": 1,
-        "default": 0,
-        "step": 0.01
+        "default": 0
       },
       {
         "key": "amp_atk",
@@ -595,7 +616,10 @@
         "min": 0,
         "max": 1,
         "default": 0.01,
-        "step": 0.01
+        "viz": {
+          "group": "amp",
+          "role": "attack"
+        }
       },
       {
         "key": "amp_dec",
@@ -604,7 +628,10 @@
         "min": 0,
         "max": 1,
         "default": 0.2,
-        "step": 0.01
+        "viz": {
+          "group": "amp",
+          "role": "decay"
+        }
       },
       {
         "key": "amp_sus",
@@ -613,7 +640,10 @@
         "min": 0,
         "max": 1,
         "default": 1.0,
-        "step": 0.01
+        "viz": {
+          "group": "amp",
+          "role": "sustain"
+        }
       },
       {
         "key": "amp_rel",
@@ -622,7 +652,10 @@
         "min": 0,
         "max": 1,
         "default": 0.2,
-        "step": 0.01
+        "viz": {
+          "group": "amp",
+          "role": "release"
+        }
       },
       {
         "key": "filt_amt",
@@ -630,8 +663,7 @@
         "type": "float",
         "min": 0,
         "max": 1,
-        "default": 0.5,
-        "step": 0.01
+        "default": 0.5
       },
       {
         "key": "filt_atk",
@@ -639,8 +671,7 @@
         "type": "float",
         "min": 0,
         "max": 1,
-        "default": 0.01,
-        "step": 0.01
+        "default": 0.01
       },
       {
         "key": "filt_dec",
@@ -648,8 +679,7 @@
         "type": "float",
         "min": 0,
         "max": 1,
-        "default": 0.3,
-        "step": 0.01
+        "default": 0.3
       },
       {
         "key": "filt_sus",
@@ -657,8 +687,7 @@
         "type": "float",
         "min": 0,
         "max": 1,
-        "default": 0,
-        "step": 0.01
+        "default": 0
       }
     ]
   }

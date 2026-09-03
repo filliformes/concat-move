@@ -105,6 +105,7 @@ typedef struct {
     int   nopts;
     float def;
     const char *unit;        /* popup suffix (NULL = none); matches module.json */
+    const char *viz;         /* raw viz JSON body, e.g. "\"group\":\"amp\",\"role\":\"attack\"" or "false" */
 } pdef_t;
 
 static const pdef_t PARAMS[NPARAMS] = {
@@ -127,8 +128,8 @@ static const pdef_t PARAMS[NPARAMS] = {
     [P_K_NEAREST]     = {"k_nearest",    "K Near",    T_INT,    1,  16, 1,  NULL, 0, 4},
     [P_FOLLOW]        = {"follow",       "Follow",       T_ENUM,   0,   2, 1,  ENV_FOLLOW, 3, 0},
     [P_REPEAT_AVOID]  = {"repeat_avoid", "Rpt Avoid", T_INT,    0,  16, 1,  NULL, 0, 4},
-    [P_LFO_RATE]      = {"lfo_rate",     "LFO Rate",     T_FLOAT, 0.01f, 10, 0.01f, NULL, 0, 0.2f, "Hz"},
-    [P_LFO_SHAPE]     = {"lfo_shape",    "LFO Shp",    T_ENUM,   0,   3, 1,  ENV_LFO_SHAPE, 4, 0},
+    [P_LFO_RATE]      = {"lfo_rate",     "LFO Rate",     T_FLOAT, 0.01f, 10, 0.01f, NULL, 0, 0.2f, "Hz", "{\"group\":\"lfo\",\"role\":\"rate\"}"},
+    [P_LFO_SHAPE]     = {"lfo_shape",    "LFO Shp",      T_ENUM,   0,   3, 1,  ENV_LFO_SHAPE, 4, 0, NULL, "{\"group\":\"lfo\",\"role\":\"shape\"}"},
     /* Grain */
     [P_DENSITY]       = {"density",      "Density",      T_FLOAT,  1, 100, 1,  NULL, 0, 20,  "g/s"},
     [P_GRAIN_SIZE]    = {"grain_size",   "Grain Size",   T_FLOAT, 10,2000, 1,  NULL, 0, 120, "ms"},
@@ -147,18 +148,20 @@ static const pdef_t PARAMS[NPARAMS] = {
     [P_SAT]           = {"sat",          "Sat",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
     /* Out */
     /* DJ filter: one bipolar knob (center = bypass, left = LP down, right = HP up) */
-    [P_CUTOFF]        = {"cutoff",       "Filter",       T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.5f},
-    [P_RESO]          = {"resonance",    "Reso",    T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
+    /* DJ filter is bipolar (center bypass, L=LP down, R=HP up) — the auto-detected
+     * LP filter graphic is misleading, so kill the graphic and leave a plain dial. */
+    [P_CUTOFF]        = {"cutoff",       "Filter",       T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.5f, NULL, "false"},
+    [P_RESO]          = {"resonance",    "Reso",         T_FLOAT,  0,   1, 0.01f, NULL, 0, 0,    NULL, "false"},
     /* Expression */
     [P_PRESSURE]      = {"pressure",     "Pressure",     T_ENUM,   0,   7, 1,  ENV_PRESSURE, 8, 1},   /* default Proximity */
     [P_PRESS_AMT]     = {"press_amt",    "Press Amt",    T_FLOAT,  0,   1, 0.01f, NULL, 0, 1.0f},
     [P_VEL_AMT]       = {"vel_amt",      "Vel Amt",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 1.0f},
-    [P_POLY]          = {"poly",         "Poly",    T_INT,    1, 128, 1,  NULL, 0, 48},
+    [P_POLY]          = {"poly",         "Polyphony",    T_INT,    1, 128, 1,  NULL, 0, 48},
     /* Shape — amp + filter envelopes (0..1 time knobs mapped to seconds; sus/amt are levels) */
-    [P_AMP_ATK]       = {"amp_atk",      "Amp Atk",      T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.01f},
-    [P_AMP_DEC]       = {"amp_dec",      "Amp Dec",      T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.2f},
-    [P_AMP_SUS]       = {"amp_sus",      "Amp Sus",      T_FLOAT,  0,   1, 0.01f, NULL, 0, 1.0f},
-    [P_AMP_REL]       = {"amp_rel",      "Amp Rel",      T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.2f},
+    [P_AMP_ATK]       = {"amp_atk",      "Amp Atk",      T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.01f, NULL, "{\"group\":\"amp\",\"role\":\"attack\"}"},
+    [P_AMP_DEC]       = {"amp_dec",      "Amp Dec",      T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.2f,  NULL, "{\"group\":\"amp\",\"role\":\"decay\"}"},
+    [P_AMP_SUS]       = {"amp_sus",      "Amp Sus",      T_FLOAT,  0,   1, 0.01f, NULL, 0, 1.0f,  NULL, "{\"group\":\"amp\",\"role\":\"sustain\"}"},
+    [P_AMP_REL]       = {"amp_rel",      "Amp Rel",      T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.2f,  NULL, "{\"group\":\"amp\",\"role\":\"release\"}"},
     [P_FILT_AMT]      = {"filt_amt",     "Filt Env",     T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.5f},   /* 0.5 = no env */
     [P_FILT_ATK]      = {"filt_atk",     "Filt Atk",     T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.01f},
     [P_FILT_DEC]      = {"filt_dec",     "Filt Dec",     T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.3f},
@@ -173,7 +176,8 @@ static const pdef_t PARAMS[NPARAMS] = {
  * legacy knob_N_* overlay. Ships in module.json too — keep the two in sync. */
 static const char UI_HIERARCHY[] =
 "{\"modes\":null,\"levels\":{"
-"\"root\":{\"name\":\"Concat\",\"knobs\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"],\"params\":[\"corpus_file\",\"src_scope\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\",{\"level\":\"map\",\"label\":\"Map\"},{\"level\":\"mod\",\"label\":\"Mod\"},{\"level\":\"grain\",\"label\":\"Grain\"},{\"level\":\"shape\",\"label\":\"Shape\"},{\"level\":\"play\",\"label\":\"Play\"},{\"level\":\"out\",\"label\":\"Out\"}]},"
+"\"root\":{\"name\":\"Concat\",\"knobs\":[\"x_pos\",\"y_pos\",\"density\",\"grain_size\",\"amp_atk\",\"amp_rel\",\"poly\",\"cutoff\"],\"params\":[\"x_pos\",\"y_pos\",\"density\",\"grain_size\",\"amp_atk\",\"amp_rel\",\"poly\",\"cutoff\",{\"level\":\"corpus\",\"label\":\"Corpus\"},{\"level\":\"map\",\"label\":\"Map\"},{\"level\":\"mod\",\"label\":\"Mod\"},{\"level\":\"grain\",\"label\":\"Grain\"},{\"level\":\"shape\",\"label\":\"Shape\"},{\"level\":\"play\",\"label\":\"Play\"},{\"level\":\"out\",\"label\":\"Out\"}]},"
+"\"corpus\":{\"name\":\"Corpus\",\"knobs\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"],\"params\":[\"corpus_file\",\"src_scope\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"]},"
 "\"map\":{\"name\":\"Map\",\"knobs\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"map_mode\",\"radius\",\"k_nearest\",\"repeat_avoid\"],\"params\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"map_mode\",\"radius\",\"k_nearest\",\"repeat_avoid\"]},"
 "\"mod\":{\"name\":\"Mod\",\"knobs\":[\"follow\",\"lfo_rate\",\"lfo_shape\"],\"params\":[\"follow\",\"lfo_rate\",\"lfo_shape\"]},"
 "\"grain\":{\"name\":\"Grain\",\"knobs\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pan_spread\",\"grain_rand\",\"reverse\",\"pitch_jitter\"],\"params\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pan_spread\",\"grain_rand\",\"reverse\",\"pitch_jitter\"]},"
@@ -546,17 +550,19 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
             if (p->type == T_ENUM) {
                 CP_EMIT("\"type\":\"enum\",\"options\":[");
                 for (int j = 0; j < p->nopts; j++) CP_EMIT("%s\"%s\"", j ? "," : "", p->opts[j]);
-                CP_EMIT("]}");
+                CP_EMIT("]");
             } else if (p->type == T_INT) {
                 CP_EMIT("\"type\":\"int\",\"min\":%d,\"max\":%d", (int)p->min, (int)p->max);
                 if (p->unit) CP_EMIT(",\"unit\":\"%s\"", p->unit);
-                CP_EMIT("}");
             } else {
-                CP_EMIT("\"type\":\"float\",\"min\":%g,\"max\":%g,\"step\":%g",
-                        (double)p->min, (double)p->max, (double)p->step);
+                CP_EMIT("\"type\":\"float\",\"min\":%g,\"max\":%g", (double)p->min, (double)p->max);
+                /* skip step on default 0-1 knobs (Schwung uses 0.01) — saves ~12B/entry */
+                if (!(p->min == 0.0f && p->max == 1.0f && p->step == 0.01f))
+                    CP_EMIT(",\"step\":%g", (double)p->step);
                 if (p->unit) CP_EMIT(",\"unit\":\"%s\"", p->unit);
-                CP_EMIT("}");
             }
+            if (p->viz) CP_EMIT(",\"viz\":%s", p->viz);   /* raw body: false | {group,role} */
+            CP_EMIT("}");
         }
         CP_EMIT("]");
 #undef CP_EMIT
