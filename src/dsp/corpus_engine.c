@@ -296,12 +296,11 @@ static void corpus_write_scatter_bmp(corpus_index_t *ix, const char *cache_dir, 
         else if (px > W - 1) px = W - 1;
         if (py < 0) py = 0;
         else if (py > H - 1) py = H - 1;
-        /* dot cluster: darken 2x2 for visibility */
+        /* Solid black on any hit — mono OLED thresholds at 128, so a subtle darken
+         * would drop below-threshold dots. Then a 2x2 cluster for visibility. */
         for (int dx = 0; dx < 2 && px + dx < W; dx++)
-            for (int dy = 0; dy < 2 && py + dy < H; dy++) {
-                unsigned char *p = &pix[(py + dy) * W + (px + dx)];
-                if (*p > 60) *p -= 60; else *p = 0;
-            }
+            for (int dy = 0; dy < 2 && py + dy < H; dy++)
+                pix[(py + dy) * W + (px + dx)] = 0;
     }
 
     /* BMP: 14-byte file header + 40-byte DIB v3 + 1024-byte greyscale palette + pixel data.
