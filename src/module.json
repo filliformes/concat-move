@@ -40,6 +40,10 @@
             "poly",
             "cutoff",
             {
+              "level": "view",
+              "label": "View"
+            },
+            {
               "level": "corpus",
               "label": "Corpus"
             },
@@ -48,8 +52,8 @@
               "label": "Map"
             },
             {
-              "level": "mod",
-              "label": "Mod"
+              "level": "mod_set",
+              "label": "Mod & Set"
             },
             {
               "level": "grain",
@@ -90,19 +94,6 @@
             "radius",
             "k_nearest",
             "repeat_avoid"
-          ]
-        },
-        "mod": {
-          "name": "Mod",
-          "knobs": [
-            "follow",
-            "lfo_rate",
-            "lfo_shape"
-          ],
-          "params": [
-            "follow",
-            "lfo_rate",
-            "lfo_shape"
           ]
         },
         "grain": {
@@ -203,7 +194,6 @@
           ],
           "params": [
             "corpus_file",
-            "src_scope",
             "pool_mb",
             "rescan",
             "slice_mode",
@@ -211,6 +201,30 @@
             "max_slice_ms",
             "analyze",
             "silence_gate"
+          ]
+        },
+        "view": {
+          "name": "View",
+          "knobs": [
+            "map_view"
+          ],
+          "params": [
+            "map_view"
+          ]
+        },
+        "mod_set": {
+          "name": "Mod & Set",
+          "knobs": [
+            "follow",
+            "lfo_rate",
+            "lfo_shape",
+            "src_scope"
+          ],
+          "params": [
+            "follow",
+            "lfo_rate",
+            "lfo_shape",
+            "src_scope"
           ]
         }
       }
@@ -227,6 +241,12 @@
           ".mp3"
         ],
         "default": ""
+      },
+      {
+        "key": "map_view",
+        "name": "View",
+        "type": "canvas",
+        "show_value": false
       },
       {
         "key": "src_scope",
@@ -378,9 +398,9 @@
         "name": "Follow",
         "type": "enum",
         "options": [
-          "Manual",
+          "Man",
           "LFO",
-          "Sequence"
+          "Seq"
         ]
       },
       {

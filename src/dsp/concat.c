@@ -88,7 +88,7 @@ enum { T_FLOAT, T_INT, T_ENUM };
 static const char *ENV_SRC_SCOPE[]  = {"Folder", "File"};
 static const char *ENV_SLICE_MODE[] = {"Onset", "Fixed"};
 static const char *ENV_DESC[]       = {"Bright", "Pitch", "Loud", "Noisy", "Rolloff", "MFCC1", "MFCC2", "MFCC3"};
-static const char *ENV_FOLLOW[]     = {"Manual", "LFO", "Sequence"};
+static const char *ENV_FOLLOW[]     = {"Man", "LFO", "Seq"};
 static const char *ENV_GRAIN[]      = {"Hann", "Tukey", "Tri", "Gauss", "Expo", "RevExpo", "Trapez", "Black"};
 static const char *ENV_PLAY_MODE[]  = {"Map", "Notes", "Mosaic"};
 static const char *ENV_PRESSURE[]   = {"Off", "Proximity", "Density", "Bright", "Sat", "Pitch", "Grain", "Jitter"};
@@ -176,10 +176,11 @@ static const pdef_t PARAMS[NPARAMS] = {
  * legacy knob_N_* overlay. Ships in module.json too — keep the two in sync. */
 static const char UI_HIERARCHY[] =
 "{\"modes\":null,\"levels\":{"
-"\"root\":{\"name\":\"Concat\",\"knobs\":[\"x_pos\",\"y_pos\",\"density\",\"grain_size\",\"amp_atk\",\"amp_rel\",\"poly\",\"cutoff\"],\"params\":[\"x_pos\",\"y_pos\",\"density\",\"grain_size\",\"amp_atk\",\"amp_rel\",\"poly\",\"cutoff\",{\"level\":\"corpus\",\"label\":\"Corpus\"},{\"level\":\"map\",\"label\":\"Map\"},{\"level\":\"mod\",\"label\":\"Mod\"},{\"level\":\"grain\",\"label\":\"Grain\"},{\"level\":\"shape\",\"label\":\"Shape\"},{\"level\":\"play\",\"label\":\"Play\"},{\"level\":\"out\",\"label\":\"Out\"}]},"
-"\"corpus\":{\"name\":\"Corpus\",\"knobs\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"],\"params\":[\"corpus_file\",\"src_scope\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"]},"
+"\"root\":{\"name\":\"Concat\",\"knobs\":[\"x_pos\",\"y_pos\",\"density\",\"grain_size\",\"amp_atk\",\"amp_rel\",\"poly\",\"cutoff\"],\"params\":[\"x_pos\",\"y_pos\",\"density\",\"grain_size\",\"amp_atk\",\"amp_rel\",\"poly\",\"cutoff\",{\"level\":\"view\",\"label\":\"View\"},{\"level\":\"corpus\",\"label\":\"Corpus\"},{\"level\":\"map\",\"label\":\"Map\"},{\"level\":\"mod_set\",\"label\":\"Mod & Set\"},{\"level\":\"grain\",\"label\":\"Grain\"},{\"level\":\"shape\",\"label\":\"Shape\"},{\"level\":\"play\",\"label\":\"Play\"},{\"level\":\"out\",\"label\":\"Out\"}]},"
+"\"view\":{\"name\":\"View\",\"knobs\":[\"map_view\"],\"params\":[\"map_view\"]},"
+"\"corpus\":{\"name\":\"Corpus\",\"knobs\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"],\"params\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"]},"
+"\"mod_set\":{\"name\":\"Mod & Set\",\"knobs\":[\"follow\",\"lfo_rate\",\"lfo_shape\",\"src_scope\"],\"params\":[\"follow\",\"lfo_rate\",\"lfo_shape\",\"src_scope\"]},"
 "\"map\":{\"name\":\"Map\",\"knobs\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"map_mode\",\"radius\",\"k_nearest\",\"repeat_avoid\"],\"params\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"map_mode\",\"radius\",\"k_nearest\",\"repeat_avoid\"]},"
-"\"mod\":{\"name\":\"Mod\",\"knobs\":[\"follow\",\"lfo_rate\",\"lfo_shape\"],\"params\":[\"follow\",\"lfo_rate\",\"lfo_shape\"]},"
 "\"grain\":{\"name\":\"Grain\",\"knobs\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pan_spread\",\"grain_rand\",\"reverse\",\"pitch_jitter\"],\"params\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pan_spread\",\"grain_rand\",\"reverse\",\"pitch_jitter\"]},"
 "\"shape\":{\"name\":\"Shape\",\"knobs\":[\"amp_atk\",\"amp_dec\",\"amp_sus\",\"amp_rel\",\"filt_amt\",\"filt_atk\",\"filt_dec\",\"filt_sus\"],\"params\":[\"amp_atk\",\"amp_dec\",\"amp_sus\",\"amp_rel\",\"filt_amt\",\"filt_atk\",\"filt_dec\",\"filt_sus\"]},"
 "\"play\":{\"name\":\"Play\",\"knobs\":[\"play_mode\",\"note_match\",\"pressure\",\"press_amt\",\"vel_amt\",\"poly\"],\"params\":[\"play_mode\",\"note_match\",\"pressure\",\"press_amt\",\"vel_amt\",\"poly\"]},"
@@ -544,6 +545,8 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
 #define CP_EMIT(...) do { if (n < buf_len) n += snprintf(buf + n, buf_len - n, __VA_ARGS__); } while (0)
         CP_EMIT("[{\"key\":\"corpus_file\",\"name\":\"Source\",\"type\":\"filepath\","
                 "\"root\":\"/data/UserData/UserLibrary\",\"filter\":[\".wav\",\".flac\",\".mp3\"]}");
+        /* Fullscreen canvas view of the corpus map (scatter + query + trail). */
+        CP_EMIT(",{\"key\":\"map_view\",\"name\":\"View\",\"type\":\"canvas\"}");
         for (int i = 0; i < NPARAMS; i++) {
             const pdef_t *p = &PARAMS[i];
             CP_EMIT(",{\"key\":\"%s\",\"name\":\"%s\",", p->key, p->label);
@@ -581,6 +584,46 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
     if (strcmp(key, "corpus_file") == 0) return snprintf(buf, buf_len, "%s", inst->corpus_file);
     if (strcmp(key, "corpus_path") == 0) return snprintf(buf, buf_len, "%s", inst->corpus_path);
     if (strcmp(key, "analyze") == 0) return snprintf(buf, buf_len, "%d", inst->progress);  /* live 0..100 */
+
+    /* Canvas view feeds: cheap reads served every repaint on the SPI callback. */
+    if (strcmp(key, "map_scatter") == 0) {
+        corpus_index_t *ix = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE);
+        return snprintf(buf, buf_len, "%s", (ix && ix->scatter_bmp[0]) ? ix->scatter_bmp : "");
+    }
+    if (strcmp(key, "map_live") == 0) {   /* x,y,radius as ints (0..127 / 0..63 / 0..127) + last N slice x,y pairs */
+        corpus_index_t *ix = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE);
+        if (!ix || ix->nslices <= 0) return snprintf(buf, buf_len, "0,0,0");
+        float xp = inst->pv[P_X_POS], yp = inst->pv[P_Y_POS], r = inst->pv[P_RADIUS];
+        int qx = (int)(xp * 127.0f), qy = (int)((1.0f - yp) * 63.0f), qr = (int)(r * 60.0f);
+        int n = snprintf(buf, buf_len, "%d,%d,%d", qx, qy, qr);
+        /* Trail: pixel coords of the last few played slices. Read q->last_sel + ring. */
+        int rc = ix->query.ring_count, rh = ix->query.ring_head, cap = ix->query.ring_cap;
+        for (int t = 0; t < rc && t < 8; t++) {
+            int idx = ix->query.ring[(rh - 1 - t + cap * 2) % (cap ? cap : 1)];
+            if (idx < 0 || idx >= ix->nslices) continue;
+            /* Project the slice to the same plane as the scatter (PCA if available). */
+            double p1, p2;
+            if (ix->pca_ok) {
+                p1 = 0; p2 = 0;
+                for (int j = 0; j < NDESC; j++) {
+                    double dq = ix->qn[idx * NDESC + j] - ix->pca_mean[j];
+                    p1 += dq * ix->pca_axis[0][j]; p2 += dq * ix->pca_axis[1][j];
+                }
+                float rx = ix->pca_max[0] - ix->pca_min[0], ry = ix->pca_max[1] - ix->pca_min[1];
+                if (rx <= 0) rx = 1;
+                if (ry <= 0) ry = 1;
+                p1 = (p1 - ix->pca_min[0]) / rx; p2 = (p2 - ix->pca_min[1]) / ry;
+            } else { p1 = ix->qn[idx * NDESC + D_CENTROID_MEAN]; p2 = ix->qn[idx * NDESC + D_LOUD_MEAN]; }
+            int tx = (int)(p1 * 127.0), ty = (int)((1.0 - p2) * 63.0);
+            if (tx < 0) tx = 0;
+            if (tx > 127) tx = 127;
+            if (ty < 0) ty = 0;
+            if (ty > 63)  ty = 63;
+            if (n < buf_len - 8) n += snprintf(buf + n, buf_len - n, ",%d,%d", tx, ty);
+        }
+        return n;
+    }
+    if (strcmp(key, "map_view") == 0) return snprintf(buf, buf_len, "map");   /* canvas cell needs a value */
     if (strcmp(key, "_dbg") == 0) {   /* debug introspection */
         corpus_index_t *ix = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE);
         return snprintf(buf, buf_len, "started=%d arm=%d prog=%d idx=%d nslices=%d pool=%d kclusters=%d pca=%d spb=%d path=[%s]",

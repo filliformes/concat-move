@@ -18,7 +18,8 @@ MSYS_NO_PATHCONV=1 docker run --rm -v "$ROOT:/build" schwung-concat-builder \
     -lm -lpthread'
 
 cp "$ROOT/src/module.json" "$ROOT/dist/$MODULE_ID/"
-[ -f "$ROOT/src/help.json" ] && cp "$ROOT/src/help.json" "$ROOT/dist/$MODULE_ID/"
+[ -f "$ROOT/src/help.json" ]   && cp "$ROOT/src/help.json"   "$ROOT/dist/$MODULE_ID/"
+[ -f "$ROOT/src/canvas.js" ]   && cp "$ROOT/src/canvas.js"   "$ROOT/dist/$MODULE_ID/"
 tar -czf "$ROOT/dist/$MODULE_ID-module.tar.gz" -C "$ROOT/dist" "$MODULE_ID"
 echo "Built: dist/$MODULE_ID-module.tar.gz"
 

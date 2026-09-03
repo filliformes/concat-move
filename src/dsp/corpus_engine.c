@@ -258,6 +258,88 @@ static void corpus_pca(corpus_index_t *ix) {
     ix->pca_ok = (mx[0] > mn[0] && mx[1] > mn[1]) ? 1 : 0;
 }
 
+/* Write a 128x64 8-bit grayscale BMP of the corpus scatter for canvas.js to blit.
+ * Uses PCA plane when available, else the raw centroid/loud descriptor axes.
+ * Format is bare BMP (bottom-up, DIB v3, 8-bit indexed grayscale, 256-colour table). */
+static void corpus_write_scatter_bmp(corpus_index_t *ix, const char *cache_dir, const char *folder) {
+    if (!cache_dir || ix->nslices <= 0) return;
+    /* 8x downsampled: 128 px * 8 = 1024 columns padded to /4 → each row = 128 bytes. */
+    const int W = 128, H = 64;
+    unsigned char pix[64 * 128]; memset(pix, 255, sizeof(pix));   /* white bg */
+
+    int use_pca = ix->pca_ok;
+    float minx, maxx, miny, maxy;
+    if (use_pca) { minx=ix->pca_min[0]; maxx=ix->pca_max[0]; miny=ix->pca_min[1]; maxy=ix->pca_max[1]; }
+    else {
+        minx=maxx=ix->qn[D_CENTROID_MEAN]; miny=maxy=ix->qn[D_LOUD_MEAN];
+        for (int i = 1; i < ix->nslices; i++) {
+            float a = ix->qn[i * NDESC + D_CENTROID_MEAN], b = ix->qn[i * NDESC + D_LOUD_MEAN];
+            if (a < minx) minx = a;
+            if (a > maxx) maxx = a;
+            if (b < miny) miny = b;
+            if (b > maxy) maxy = b;
+        }
+    }
+    float rx = (maxx > minx) ? (maxx - minx) : 1.0f, ry = (maxy > miny) ? (maxy - miny) : 1.0f;
+    for (int i = 0; i < ix->nslices; i++) {
+        double p1, p2;
+        if (use_pca) {
+            p1 = 0; p2 = 0;
+            for (int j = 0; j < NDESC; j++) {
+                double dq = ix->qn[i * NDESC + j] - ix->pca_mean[j];
+                p1 += dq * ix->pca_axis[0][j]; p2 += dq * ix->pca_axis[1][j];
+            }
+        } else { p1 = ix->qn[i * NDESC + D_CENTROID_MEAN]; p2 = ix->qn[i * NDESC + D_LOUD_MEAN]; }
+        int px = (int)(((p1 - minx) / rx) * (W - 1));
+        int py = (int)(((p2 - miny) / ry) * (H - 1));
+        if (px < 0) px = 0;
+        else if (px > W - 1) px = W - 1;
+        if (py < 0) py = 0;
+        else if (py > H - 1) py = H - 1;
+        /* dot cluster: darken 2x2 for visibility */
+        for (int dx = 0; dx < 2 && px + dx < W; dx++)
+            for (int dy = 0; dy < 2 && py + dy < H; dy++) {
+                unsigned char *p = &pix[(py + dy) * W + (px + dx)];
+                if (*p > 60) *p -= 60; else *p = 0;
+            }
+    }
+
+    /* BMP: 14-byte file header + 40-byte DIB v3 + 1024-byte greyscale palette + pixel data.
+     * Rows are bottom-up, each row 4-byte aligned (W=128 already aligned). */
+    const int row = W, palsize = 256 * 4, hdr = 14 + 40 + palsize, filesz = hdr + row * H;
+    unsigned char bmp[14 + 40 + 256 * 4 + 64 * 128];
+    memset(bmp, 0, sizeof(bmp));
+    bmp[0]='B'; bmp[1]='M';
+    bmp[2]=filesz&0xff; bmp[3]=(filesz>>8)&0xff; bmp[4]=(filesz>>16)&0xff; bmp[5]=(filesz>>24)&0xff;
+    bmp[10]=hdr&0xff; bmp[11]=(hdr>>8)&0xff; bmp[12]=(hdr>>16)&0xff; bmp[13]=(hdr>>24)&0xff;
+    bmp[14]=40;
+    bmp[18]=W&0xff; bmp[19]=(W>>8)&0xff;
+    bmp[22]=H&0xff; bmp[23]=(H>>8)&0xff;
+    bmp[26]=1; bmp[28]=8;                        /* planes=1, bpp=8 */
+    int imgsz = row * H;
+    bmp[34]=imgsz&0xff; bmp[35]=(imgsz>>8)&0xff; bmp[36]=(imgsz>>16)&0xff;
+    bmp[46]=0; bmp[50]=0;                        /* colors used = 256 (0 = default) */
+    /* greyscale palette */
+    for (int c = 0; c < 256; c++) {
+        int o = 14 + 40 + c * 4;
+        bmp[o] = bmp[o+1] = bmp[o+2] = (unsigned char)c;
+    }
+    /* pixel data — BMP is bottom-up, so flip the row order. */
+    for (int y = 0; y < H; y++)
+        memcpy(&bmp[hdr + (H - 1 - y) * row], &pix[y * W], W);
+
+    char tmp[620];
+    snprintf(ix->scatter_bmp, sizeof(ix->scatter_bmp), "%s/scatter_%016llx.bmp", cache_dir,
+             (unsigned long long)fnv1a(0xcbf29ce484222325ULL, folder, (int)strlen(folder)));
+    snprintf(tmp, sizeof(tmp), "%s.tmp", ix->scatter_bmp);
+    FILE *fp = fopen(tmp, "wb");
+    if (fp) {
+        int wr = (int)fwrite(bmp, 1, filesz, fp);
+        fclose(fp);
+        if (wr == filesz) rename(tmp, ix->scatter_bmp); else remove(tmp);
+    }
+}
+
 corpus_index_t *corpus_index_build(const char *folder, int sr,
                                    int slice_mode, int min_len, int max_len,
                                    float sil_gate, int pool_cap_samples,
@@ -274,7 +356,10 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
     uint64_t sig = cache_dir ? corpus_signature(paths, nfiles, slice_mode, min_len, max_len, sil_gate, sr) : 0;
     if (cache_dir && sig && !force_rescan) {
         corpus_index_t *hit = cache_load(cache_dir, folder, sig, pool_cap_samples);
-        if (hit) { free(paths); if (progress) *progress = 100; return hit; }
+        if (hit) {
+            corpus_write_scatter_bmp(hit, cache_dir, folder);   /* regenerate scatter image (cheap) */
+            free(paths); if (progress) *progress = 100; return hit;
+        }
     }
 
     analysis_t *a = analysis_create(sr, 1024, 40, 13);
@@ -372,6 +457,7 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
     query_init(&ix->query, ix->qn, ix->nslices);
     corpus_kmeans(ix);                                              /* pad-jump cluster centroids */
     corpus_pca(ix);                                                 /* learned 2-D map axes */
+    corpus_write_scatter_bmp(ix, cache_dir, folder);                /* canvas.js scatter image */
     if (cache_dir && sig) cache_store(cache_dir, folder, sig, ix);   /* best-effort */
     if (progress) *progress = 100;
     return ix;
