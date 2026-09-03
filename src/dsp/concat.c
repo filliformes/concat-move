@@ -67,7 +67,7 @@ static const concat_host_t *g_host = NULL;
 
 enum {
     /* Corpus */
-    P_POOL_MB, P_RESCAN, P_SLICE_MODE, P_MIN_SLICE, P_MAX_SLICE, P_ANALYZE, P_SILENCE_GATE,
+    P_SRC_SCOPE, P_POOL_MB, P_RESCAN, P_SLICE_MODE, P_MIN_SLICE, P_MAX_SLICE, P_ANALYZE, P_SILENCE_GATE,
     /* Map */
     P_MAP_MODE, P_X_DESC, P_Y_DESC, P_X_POS, P_Y_POS, P_RADIUS, P_K_NEAREST, P_FOLLOW, P_REPEAT_AVOID, P_LFO_RATE, P_LFO_SHAPE,
     /* Grain */
@@ -85,6 +85,7 @@ enum {
 
 enum { T_FLOAT, T_INT, T_ENUM };
 
+static const char *ENV_SRC_SCOPE[]  = {"Folder", "File"};
 static const char *ENV_SLICE_MODE[] = {"Onset", "Fixed"};
 static const char *ENV_DESC[]       = {"Bright", "Pitch", "Loud", "Noisy", "Rolloff", "MFCC1", "MFCC2", "MFCC3"};
 static const char *ENV_FOLLOW[]     = {"Manual", "LFO", "Sequence"};
@@ -108,50 +109,51 @@ typedef struct {
 
 static const pdef_t PARAMS[NPARAMS] = {
     /* Corpus */
-    [P_POOL_MB]       = {"pool_mb",      "Pool Cap",     T_INT,   16, 512, 1,  NULL, 0, 128, "MB"},
+    [P_SRC_SCOPE]     = {"src_scope",    "Scope",        T_ENUM,   0,   1, 1,  ENV_SRC_SCOPE, 2, 0},   /* Folder | File */
+    [P_POOL_MB]       = {"pool_mb",      "Pool",     T_INT,   16, 512, 1,  NULL, 0, 128, "MB"},
     [P_RESCAN]        = {"rescan",       "Rescan",       T_INT,    0, 127, 1,  NULL, 0, 0},
-    [P_SLICE_MODE]    = {"slice_mode",   "Slice Mode",   T_ENUM,   0,   1, 1,  ENV_SLICE_MODE, 2, 0},
-    [P_MIN_SLICE]     = {"min_slice_ms", "Min Slice",    T_FLOAT, 20, 500, 5,  NULL, 0, 60,  "ms"},
-    [P_MAX_SLICE]     = {"max_slice_ms", "Max Slice",    T_FLOAT,100,2000,10,  NULL, 0, 400, "ms"},
+    [P_SLICE_MODE]    = {"slice_mode",   "Slice",   T_ENUM,   0,   1, 1,  ENV_SLICE_MODE, 2, 0},
+    [P_MIN_SLICE]     = {"min_slice_ms", "Min Sl",    T_FLOAT, 20, 500, 5,  NULL, 0, 60,  "ms"},
+    [P_MAX_SLICE]     = {"max_slice_ms", "Max Sl",    T_FLOAT,100,2000,10,  NULL, 0, 400, "ms"},
     [P_ANALYZE]       = {"analyze",      "Analyze",      T_INT,    0, 100, 1,  NULL, 0, 0},
-    [P_SILENCE_GATE]  = {"silence_gate", "Silence Gate", T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.02f},
+    [P_SILENCE_GATE]  = {"silence_gate", "Sil Gate", T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.02f},
     /* Map */
     [P_MAP_MODE]      = {"map_mode",     "Map Mode",     T_ENUM,   0,   1, 1,  ENV_MAP_MODE, 2, 0},   /* Raw axes / Learned PCA */
-    [P_X_DESC]        = {"x_desc",       "X Descriptor", T_ENUM,   0,   7, 1,  ENV_DESC, 8, 0},
-    [P_Y_DESC]        = {"y_desc",       "Y Descriptor", T_ENUM,   0,   7, 1,  ENV_DESC, 8, 1},
-    [P_X_POS]         = {"x_pos",        "X Position",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.5f},
-    [P_Y_POS]         = {"y_pos",        "Y Position",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.5f},
+    [P_X_DESC]        = {"x_desc",       "X Desc", T_ENUM,   0,   7, 1,  ENV_DESC, 8, 0},
+    [P_Y_DESC]        = {"y_desc",       "Y Desc", T_ENUM,   0,   7, 1,  ENV_DESC, 8, 1},
+    [P_X_POS]         = {"x_pos",        "X Pos",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.5f},
+    [P_Y_POS]         = {"y_pos",        "Y Pos",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.5f},
     [P_RADIUS]        = {"radius",       "Radius",       T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.15f},
-    [P_K_NEAREST]     = {"k_nearest",    "K Nearest",    T_INT,    1,  16, 1,  NULL, 0, 4},
+    [P_K_NEAREST]     = {"k_nearest",    "K Near",    T_INT,    1,  16, 1,  NULL, 0, 4},
     [P_FOLLOW]        = {"follow",       "Follow",       T_ENUM,   0,   2, 1,  ENV_FOLLOW, 3, 0},
-    [P_REPEAT_AVOID]  = {"repeat_avoid", "Repeat Avoid", T_INT,    0,  16, 1,  NULL, 0, 4},
+    [P_REPEAT_AVOID]  = {"repeat_avoid", "Rpt Avoid", T_INT,    0,  16, 1,  NULL, 0, 4},
     [P_LFO_RATE]      = {"lfo_rate",     "LFO Rate",     T_FLOAT, 0.01f, 10, 0.01f, NULL, 0, 0.2f, "Hz"},
-    [P_LFO_SHAPE]     = {"lfo_shape",    "LFO Shape",    T_ENUM,   0,   3, 1,  ENV_LFO_SHAPE, 4, 0},
+    [P_LFO_SHAPE]     = {"lfo_shape",    "LFO Shp",    T_ENUM,   0,   3, 1,  ENV_LFO_SHAPE, 4, 0},
     /* Grain */
     [P_DENSITY]       = {"density",      "Density",      T_FLOAT,  1, 100, 1,  NULL, 0, 20,  "g/s"},
     [P_GRAIN_SIZE]    = {"grain_size",   "Grain Size",   T_FLOAT, 10,2000, 1,  NULL, 0, 120, "ms"},
-    [P_GRAIN_ENV]     = {"grain_env",    "Grain Env",    T_ENUM,   0,   7, 1,  ENV_GRAIN, 8, 0},
+    [P_GRAIN_ENV]     = {"grain_env",    "Grn Env",    T_ENUM,   0,   7, 1,  ENV_GRAIN, 8, 0},
     [P_PITCH]         = {"pitch",        "Pitch",        T_FLOAT,-24,  24, 1,  NULL, 0, 0,   "st"},
-    [P_PITCH_JITTER]  = {"pitch_jitter", "Pitch Jitter", T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
-    [P_PAN_SPREAD]    = {"pan_spread",   "Pan Spread",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.3f},
-    [P_REVERSE]       = {"reverse",      "Reverse",      T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
-    [P_GRAIN_RAND]    = {"grain_rand",   "Grain Rand",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
+    [P_PITCH_JITTER]  = {"pitch_jitter", "Pch Jit", T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
+    [P_PAN_SPREAD]    = {"pan_spread",   "Pan Sprd",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.3f},
+    [P_REVERSE]       = {"reverse",      "Rev",      T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
+    [P_GRAIN_RAND]    = {"grain_rand",   "Grn Rand",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
     /* Play / Out */
     [P_PLAY_MODE]     = {"play_mode",    "Play Mode",    T_ENUM,   0,   2, 1,  ENV_PLAY_MODE, 3, 1},   /* default Notes */
-    [P_NOTE_MATCH]    = {"note_match",   "Note Match",   T_ENUM,   0,   2, 1,  ENV_NOTE_MATCH, 3, 2},   /* default Zone */
+    [P_NOTE_MATCH]    = {"note_match",   "Note",   T_ENUM,   0,   2, 1,  ENV_NOTE_MATCH, 3, 2},   /* default Zone */
     [P_DRY_MIX]       = {"dry_mix",      "Dry Mix",      T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
-    [P_VOLUME]        = {"volume",       "Volume",       T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.8f},
+    [P_VOLUME]        = {"volume",       "Vol",       T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.8f},
     [P_WIDTH]         = {"width",        "Width",        T_FLOAT,  0,   1, 0.01f, NULL, 0, 1.0f},
-    [P_SAT]           = {"sat",          "Saturation",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
+    [P_SAT]           = {"sat",          "Sat",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
     /* Out */
     /* DJ filter: one bipolar knob (center = bypass, left = LP down, right = HP up) */
     [P_CUTOFF]        = {"cutoff",       "Filter",       T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.5f},
-    [P_RESO]          = {"resonance",    "Resonance",    T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
+    [P_RESO]          = {"resonance",    "Reso",    T_FLOAT,  0,   1, 0.01f, NULL, 0, 0},
     /* Expression */
     [P_PRESSURE]      = {"pressure",     "Pressure",     T_ENUM,   0,   7, 1,  ENV_PRESSURE, 8, 1},   /* default Proximity */
     [P_PRESS_AMT]     = {"press_amt",    "Press Amt",    T_FLOAT,  0,   1, 0.01f, NULL, 0, 1.0f},
-    [P_VEL_AMT]       = {"vel_amt",      "Vel Amount",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 1.0f},
-    [P_POLY]          = {"poly",         "Polyphony",    T_INT,    1, 128, 1,  NULL, 0, 48},
+    [P_VEL_AMT]       = {"vel_amt",      "Vel Amt",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 1.0f},
+    [P_POLY]          = {"poly",         "Poly",    T_INT,    1, 128, 1,  NULL, 0, 48},
     /* Shape — amp + filter envelopes (0..1 time knobs mapped to seconds; sus/amt are levels) */
     [P_AMP_ATK]       = {"amp_atk",      "Amp Atk",      T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.01f},
     [P_AMP_DEC]       = {"amp_dec",      "Amp Dec",      T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.2f},
@@ -171,7 +173,7 @@ static const pdef_t PARAMS[NPARAMS] = {
  * legacy knob_N_* overlay. Ships in module.json too — keep the two in sync. */
 static const char UI_HIERARCHY[] =
 "{\"modes\":null,\"levels\":{"
-"\"root\":{\"name\":\"Concat\",\"knobs\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"],\"params\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\",{\"level\":\"map\",\"label\":\"Map\"},{\"level\":\"mod\",\"label\":\"Mod\"},{\"level\":\"grain\",\"label\":\"Grain\"},{\"level\":\"shape\",\"label\":\"Shape\"},{\"level\":\"play\",\"label\":\"Play\"},{\"level\":\"out\",\"label\":\"Out\"}]},"
+"\"root\":{\"name\":\"Concat\",\"knobs\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"],\"params\":[\"corpus_file\",\"src_scope\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\",{\"level\":\"map\",\"label\":\"Map\"},{\"level\":\"mod\",\"label\":\"Mod\"},{\"level\":\"grain\",\"label\":\"Grain\"},{\"level\":\"shape\",\"label\":\"Shape\"},{\"level\":\"play\",\"label\":\"Play\"},{\"level\":\"out\",\"label\":\"Out\"}]},"
 "\"map\":{\"name\":\"Map\",\"knobs\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"map_mode\",\"radius\",\"k_nearest\",\"repeat_avoid\"],\"params\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"map_mode\",\"radius\",\"k_nearest\",\"repeat_avoid\"]},"
 "\"mod\":{\"name\":\"Mod\",\"knobs\":[\"follow\",\"lfo_rate\",\"lfo_shape\"],\"params\":[\"follow\",\"lfo_rate\",\"lfo_shape\"]},"
 "\"grain\":{\"name\":\"Grain\",\"knobs\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pan_spread\",\"grain_rand\",\"reverse\",\"pitch_jitter\"],\"params\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pan_spread\",\"grain_rand\",\"reverse\",\"pitch_jitter\"]},"
@@ -301,6 +303,17 @@ static long mem_available_mb(void) {
     b[n] = 0;
     char *p = strstr(b, "MemAvailable:");
     return p ? atol(p + 13) / 1024 : 0;   /* kB → MB */
+}
+
+/* Derive the analysed path from the picked file: the file itself when Scope=File
+ * (that one sample becomes the whole corpus), or its parent folder when Scope=Folder. */
+static void set_corpus_path(concat_t *inst) {
+    strncpy(inst->corpus_path, inst->corpus_file, sizeof(inst->corpus_path) - 1);
+    inst->corpus_path[sizeof(inst->corpus_path) - 1] = 0;
+    if ((int)inst->pv[P_SRC_SCOPE] == 0) {              /* Folder → dirname */
+        char *slash = strrchr(inst->corpus_path, '/');
+        if (slash && slash != inst->corpus_path) *slash = 0;
+    }
 }
 
 /* Snapshot the corpus path + analysis params and wake the analyst.
@@ -462,14 +475,17 @@ static void set_param(void *instance, const char *key, const char *val) {
     concat_t *inst = (concat_t *)instance;
     if (!inst || !key || !val) return;
 
-    if (strcmp(key, "corpus_file") == 0) {            /* filepath browser → an audio file; use its folder */
+    if (strcmp(key, "corpus_file") == 0) {            /* filepath browser → an audio file */
         strncpy(inst->corpus_file, val, sizeof(inst->corpus_file) - 1);
         inst->corpus_file[sizeof(inst->corpus_file) - 1] = 0;
-        strncpy(inst->corpus_path, val, sizeof(inst->corpus_path) - 1);
-        inst->corpus_path[sizeof(inst->corpus_path) - 1] = 0;
-        char *slash = strrchr(inst->corpus_path, '/');   /* dirname → the corpus folder */
-        if (slash && slash != inst->corpus_path) *slash = 0;
-        arm_analyst(inst, 0);                             /* analyse the picked folder (use cache if valid) */
+        set_corpus_path(inst);                            /* file or its folder, per Scope */
+        arm_analyst(inst, 0);                             /* analyse it (use cache if valid) */
+        return;
+    }
+
+    if (strcmp(key, "src_scope") == 0) {              /* Folder|File → re-read the same pick */
+        apply_value(inst, P_SRC_SCOPE, val);
+        if (inst->corpus_file[0]) { set_corpus_path(inst); arm_analyst(inst, 0); }
         return;
     }
 

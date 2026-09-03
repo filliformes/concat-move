@@ -114,6 +114,11 @@ static void scan_audio(const char *dir, char (*paths)[INGEST_PATH], int max, int
 }
 
 int ingest_list_audio(const char *dir, char (*paths)[INGEST_PATH], int max) {
+    struct stat st;
+    if (max > 0 && stat(dir, &st) == 0 && S_ISREG(st.st_mode)) {
+        snprintf(paths[0], INGEST_PATH, "%s", dir);   /* a single FILE is the whole corpus */
+        return 1;
+    }
     int n = 0;
     scan_audio(dir, paths, max, &n, 0);
     return n;

@@ -20,97 +20,646 @@
       "levels": {
         "root": {
           "name": "Concat",
-          "knobs": ["corpus_file", "pool_mb", "rescan", "slice_mode", "min_slice_ms", "max_slice_ms", "analyze", "silence_gate"],
+          "knobs": [
+            "corpus_file",
+            "pool_mb",
+            "rescan",
+            "slice_mode",
+            "min_slice_ms",
+            "max_slice_ms",
+            "analyze",
+            "silence_gate"
+          ],
           "params": [
-            "corpus_file", "pool_mb", "rescan", "slice_mode", "min_slice_ms", "max_slice_ms", "analyze", "silence_gate",
-            {"level": "map", "label": "Map"},
-            {"level": "mod", "label": "Mod"},
-            {"level": "grain", "label": "Grain"},
-            {"level": "shape", "label": "Shape"},
-            {"level": "play", "label": "Play"},
-            {"level": "out", "label": "Out"}
+            "corpus_file",
+            "src_scope",
+            "pool_mb",
+            "rescan",
+            "slice_mode",
+            "min_slice_ms",
+            "max_slice_ms",
+            "analyze",
+            "silence_gate",
+            {
+              "level": "map",
+              "label": "Map"
+            },
+            {
+              "level": "mod",
+              "label": "Mod"
+            },
+            {
+              "level": "grain",
+              "label": "Grain"
+            },
+            {
+              "level": "shape",
+              "label": "Shape"
+            },
+            {
+              "level": "play",
+              "label": "Play"
+            },
+            {
+              "level": "out",
+              "label": "Out"
+            }
           ]
         },
         "map": {
           "name": "Map",
-          "knobs": ["x_desc", "y_desc", "x_pos", "y_pos", "map_mode", "radius", "k_nearest", "repeat_avoid"],
-          "params": ["x_desc", "y_desc", "x_pos", "y_pos", "map_mode", "radius", "k_nearest", "repeat_avoid"]
+          "knobs": [
+            "x_desc",
+            "y_desc",
+            "x_pos",
+            "y_pos",
+            "map_mode",
+            "radius",
+            "k_nearest",
+            "repeat_avoid"
+          ],
+          "params": [
+            "x_desc",
+            "y_desc",
+            "x_pos",
+            "y_pos",
+            "map_mode",
+            "radius",
+            "k_nearest",
+            "repeat_avoid"
+          ]
         },
         "mod": {
           "name": "Mod",
-          "knobs": ["follow", "lfo_rate", "lfo_shape"],
-          "params": ["follow", "lfo_rate", "lfo_shape"]
+          "knobs": [
+            "follow",
+            "lfo_rate",
+            "lfo_shape"
+          ],
+          "params": [
+            "follow",
+            "lfo_rate",
+            "lfo_shape"
+          ]
         },
         "grain": {
           "name": "Grain",
-          "knobs": ["density", "grain_size", "grain_env", "pitch", "pan_spread", "grain_rand", "reverse", "pitch_jitter"],
-          "params": ["density", "grain_size", "grain_env", "pitch", "pan_spread", "grain_rand", "reverse", "pitch_jitter"]
+          "knobs": [
+            "density",
+            "grain_size",
+            "grain_env",
+            "pitch",
+            "pan_spread",
+            "grain_rand",
+            "reverse",
+            "pitch_jitter"
+          ],
+          "params": [
+            "density",
+            "grain_size",
+            "grain_env",
+            "pitch",
+            "pan_spread",
+            "grain_rand",
+            "reverse",
+            "pitch_jitter"
+          ]
         },
         "shape": {
           "name": "Shape",
-          "knobs": ["amp_atk", "amp_dec", "amp_sus", "amp_rel", "filt_amt", "filt_atk", "filt_dec", "filt_sus"],
-          "params": ["amp_atk", "amp_dec", "amp_sus", "amp_rel", "filt_amt", "filt_atk", "filt_dec", "filt_sus"]
+          "knobs": [
+            "amp_atk",
+            "amp_dec",
+            "amp_sus",
+            "amp_rel",
+            "filt_amt",
+            "filt_atk",
+            "filt_dec",
+            "filt_sus"
+          ],
+          "params": [
+            "amp_atk",
+            "amp_dec",
+            "amp_sus",
+            "amp_rel",
+            "filt_amt",
+            "filt_atk",
+            "filt_dec",
+            "filt_sus"
+          ]
         },
         "play": {
           "name": "Play",
-          "knobs": ["play_mode", "note_match", "pressure", "press_amt", "vel_amt", "poly"],
-          "params": ["play_mode", "note_match", "pressure", "press_amt", "vel_amt", "poly"]
+          "knobs": [
+            "play_mode",
+            "note_match",
+            "pressure",
+            "press_amt",
+            "vel_amt",
+            "poly"
+          ],
+          "params": [
+            "play_mode",
+            "note_match",
+            "pressure",
+            "press_amt",
+            "vel_amt",
+            "poly"
+          ]
         },
         "out": {
           "name": "Out",
-          "knobs": ["cutoff", "resonance", "sat", "dry_mix", "volume", "width"],
-          "params": ["cutoff", "resonance", "sat", "dry_mix", "volume", "width"]
+          "knobs": [
+            "cutoff",
+            "resonance",
+            "sat",
+            "dry_mix",
+            "volume",
+            "width"
+          ],
+          "params": [
+            "cutoff",
+            "resonance",
+            "sat",
+            "dry_mix",
+            "volume",
+            "width"
+          ]
         }
       }
     },
     "chain_params": [
-      {"key": "corpus_file", "name": "Source", "type": "filepath", "root": "/data/UserData/UserLibrary", "filter": [".wav", ".flac", ".mp3"], "default": ""},
-      {"key": "pool_mb", "name": "Pool Cap", "type": "int", "min": 16, "max": 512, "default": 128, "unit": "MB"},
-      {"key": "rescan", "name": "Rescan", "type": "int", "min": 0, "max": 127, "default": 0},
-      {"key": "slice_mode", "name": "Slice Mode", "type": "enum", "options": ["Onset", "Fixed"]},
-      {"key": "min_slice_ms", "name": "Min Slice", "type": "float", "min": 20, "max": 500, "default": 60, "step": 5, "unit": "ms", "display_format": "%.0f"},
-      {"key": "max_slice_ms", "name": "Max Slice", "type": "float", "min": 100, "max": 2000, "default": 400, "step": 10, "unit": "ms", "display_format": "%.0f"},
-      {"key": "analyze", "name": "Analyze", "type": "int", "min": 0, "max": 100, "default": 0, "unit": "%"},
-      {"key": "silence_gate", "name": "Silence Gate", "type": "float", "min": 0, "max": 1, "default": 0.02, "step": 0.01},
-      {"key": "map_mode", "name": "Map Mode", "type": "enum", "options": ["Raw", "Learned"]},
-      {"key": "x_desc", "name": "X Descriptor", "type": "enum", "options": ["Bright", "Pitch", "Loud", "Noisy", "Rolloff", "MFCC1", "MFCC2", "MFCC3"]},
-      {"key": "y_desc", "name": "Y Descriptor", "type": "enum", "options": ["Bright", "Pitch", "Loud", "Noisy", "Rolloff", "MFCC1", "MFCC2", "MFCC3"]},
-      {"key": "x_pos", "name": "X Position", "type": "float", "min": 0, "max": 1, "default": 0.5, "step": 0.01},
-      {"key": "y_pos", "name": "Y Position", "type": "float", "min": 0, "max": 1, "default": 0.5, "step": 0.01},
-      {"key": "radius", "name": "Radius", "type": "float", "min": 0, "max": 1, "default": 0.15, "step": 0.01},
-      {"key": "k_nearest", "name": "K Nearest", "type": "int", "min": 1, "max": 16, "default": 4},
-      {"key": "follow", "name": "Follow", "type": "enum", "options": ["Manual", "LFO", "Sequence"]},
-      {"key": "repeat_avoid", "name": "Repeat Avoid", "type": "int", "min": 0, "max": 16, "default": 4},
-      {"key": "lfo_rate", "name": "LFO Rate", "type": "float", "min": 0.01, "max": 10, "default": 0.2, "step": 0.01, "unit": "Hz"},
-      {"key": "lfo_shape", "name": "LFO Shape", "type": "enum", "options": ["Circle", "SineX", "SineY", "S&H"]},
-      {"key": "density", "name": "Density", "type": "float", "min": 1, "max": 100, "default": 20, "step": 1, "unit": "g/s", "display_format": "%.0f"},
-      {"key": "grain_size", "name": "Grain Size", "type": "float", "min": 10, "max": 2000, "default": 120, "step": 1, "unit": "ms", "display_format": "%.0f"},
-      {"key": "grain_env", "name": "Grain Env", "type": "enum", "options": ["Hann", "Tukey", "Tri", "Gauss", "Expo", "RevExpo", "Trapez", "Black"]},
-      {"key": "pitch", "name": "Pitch", "type": "float", "min": -24, "max": 24, "default": 0, "step": 1, "unit": "st", "display_format": "%.0f"},
-      {"key": "pitch_jitter", "name": "Pitch Jitter", "type": "float", "min": 0, "max": 1, "default": 0, "step": 0.01},
-      {"key": "pan_spread", "name": "Pan Spread", "type": "float", "min": 0, "max": 1, "default": 0.3, "step": 0.01},
-      {"key": "reverse", "name": "Reverse", "type": "float", "min": 0, "max": 1, "default": 0, "step": 0.01},
-      {"key": "play_mode", "name": "Play Mode", "type": "enum", "options": ["Map", "Notes", "Mosaic"]},
-      {"key": "note_match", "name": "Note Match", "type": "enum", "options": ["Off", "Pitch", "Zone"]},
-      {"key": "dry_mix", "name": "Dry Mix", "type": "float", "min": 0, "max": 1, "default": 0, "step": 0.01},
-      {"key": "volume", "name": "Volume", "type": "float", "min": 0, "max": 1, "default": 0.8, "step": 0.01},
-      {"key": "width", "name": "Width", "type": "float", "min": 0, "max": 1, "default": 1.0, "step": 0.01},
-      {"key": "sat", "name": "Saturation", "type": "float", "min": 0, "max": 1, "default": 0, "step": 0.01},
-      {"key": "cutoff", "name": "Filter", "type": "float", "min": 0, "max": 1, "default": 0.5, "step": 0.01},
-      {"key": "resonance", "name": "Resonance", "type": "float", "min": 0, "max": 1, "default": 0, "step": 0.01},
-      {"key": "pressure", "name": "Pressure", "type": "enum", "options": ["Off", "Proximity", "Density", "Bright", "Sat", "Pitch", "Grain", "Jitter"]},
-      {"key": "press_amt", "name": "Press Amt", "type": "float", "min": 0, "max": 1, "default": 1.0, "step": 0.01},
-      {"key": "vel_amt", "name": "Vel Amount", "type": "float", "min": 0, "max": 1, "default": 1.0, "step": 0.01},
-      {"key": "poly", "name": "Polyphony", "type": "int", "min": 1, "max": 128, "default": 48},
-      {"key": "grain_rand", "name": "Grain Rand", "type": "float", "min": 0, "max": 1, "default": 0, "step": 0.01},
-      {"key": "amp_atk", "name": "Amp Atk", "type": "float", "min": 0, "max": 1, "default": 0.01, "step": 0.01},
-      {"key": "amp_dec", "name": "Amp Dec", "type": "float", "min": 0, "max": 1, "default": 0.2, "step": 0.01},
-      {"key": "amp_sus", "name": "Amp Sus", "type": "float", "min": 0, "max": 1, "default": 1.0, "step": 0.01},
-      {"key": "amp_rel", "name": "Amp Rel", "type": "float", "min": 0, "max": 1, "default": 0.2, "step": 0.01},
-      {"key": "filt_amt", "name": "Filt Env", "type": "float", "min": 0, "max": 1, "default": 0.5, "step": 0.01},
-      {"key": "filt_atk", "name": "Filt Atk", "type": "float", "min": 0, "max": 1, "default": 0.01, "step": 0.01},
-      {"key": "filt_dec", "name": "Filt Dec", "type": "float", "min": 0, "max": 1, "default": 0.3, "step": 0.01},
-      {"key": "filt_sus", "name": "Filt Sus", "type": "float", "min": 0, "max": 1, "default": 0, "step": 0.01}
+      {
+        "key": "corpus_file",
+        "name": "Source",
+        "type": "filepath",
+        "root": "/data/UserData/UserLibrary",
+        "filter": [
+          ".wav",
+          ".flac",
+          ".mp3"
+        ],
+        "default": ""
+      },
+      {
+        "key": "src_scope",
+        "name": "Scope",
+        "type": "enum",
+        "options": [
+          "Folder",
+          "File"
+        ]
+      },
+      {
+        "key": "pool_mb",
+        "name": "Pool",
+        "type": "int",
+        "min": 16,
+        "max": 512,
+        "default": 128,
+        "unit": "MB"
+      },
+      {
+        "key": "rescan",
+        "name": "Rescan",
+        "type": "int",
+        "min": 0,
+        "max": 127,
+        "default": 0
+      },
+      {
+        "key": "slice_mode",
+        "name": "Slice",
+        "type": "enum",
+        "options": [
+          "Onset",
+          "Fixed"
+        ]
+      },
+      {
+        "key": "min_slice_ms",
+        "name": "Min Sl",
+        "type": "float",
+        "min": 20,
+        "max": 500,
+        "default": 60,
+        "step": 5,
+        "unit": "ms",
+        "display_format": "%.0f"
+      },
+      {
+        "key": "max_slice_ms",
+        "name": "Max Sl",
+        "type": "float",
+        "min": 100,
+        "max": 2000,
+        "default": 400,
+        "step": 10,
+        "unit": "ms",
+        "display_format": "%.0f"
+      },
+      {
+        "key": "analyze",
+        "name": "Analyze",
+        "type": "int",
+        "min": 0,
+        "max": 100,
+        "default": 0,
+        "unit": "%"
+      },
+      {
+        "key": "silence_gate",
+        "name": "Sil Gate",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0.02,
+        "step": 0.01
+      },
+      {
+        "key": "map_mode",
+        "name": "Map Mode",
+        "type": "enum",
+        "options": [
+          "Raw",
+          "Learned"
+        ]
+      },
+      {
+        "key": "x_desc",
+        "name": "X Desc",
+        "type": "enum",
+        "options": [
+          "Bright",
+          "Pitch",
+          "Loud",
+          "Noisy",
+          "Rolloff",
+          "MFCC1",
+          "MFCC2",
+          "MFCC3"
+        ]
+      },
+      {
+        "key": "y_desc",
+        "name": "Y Desc",
+        "type": "enum",
+        "options": [
+          "Bright",
+          "Pitch",
+          "Loud",
+          "Noisy",
+          "Rolloff",
+          "MFCC1",
+          "MFCC2",
+          "MFCC3"
+        ]
+      },
+      {
+        "key": "x_pos",
+        "name": "X Pos",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0.5,
+        "step": 0.01
+      },
+      {
+        "key": "y_pos",
+        "name": "Y Pos",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0.5,
+        "step": 0.01
+      },
+      {
+        "key": "radius",
+        "name": "Radius",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0.15,
+        "step": 0.01
+      },
+      {
+        "key": "k_nearest",
+        "name": "K Near",
+        "type": "int",
+        "min": 1,
+        "max": 16,
+        "default": 4
+      },
+      {
+        "key": "follow",
+        "name": "Follow",
+        "type": "enum",
+        "options": [
+          "Manual",
+          "LFO",
+          "Sequence"
+        ]
+      },
+      {
+        "key": "repeat_avoid",
+        "name": "Rpt Avoid",
+        "type": "int",
+        "min": 0,
+        "max": 16,
+        "default": 4
+      },
+      {
+        "key": "lfo_rate",
+        "name": "LFO Rate",
+        "type": "float",
+        "min": 0.01,
+        "max": 10,
+        "default": 0.2,
+        "step": 0.01,
+        "unit": "Hz"
+      },
+      {
+        "key": "lfo_shape",
+        "name": "LFO Shp",
+        "type": "enum",
+        "options": [
+          "Circle",
+          "SineX",
+          "SineY",
+          "S&H"
+        ]
+      },
+      {
+        "key": "density",
+        "name": "Density",
+        "type": "float",
+        "min": 1,
+        "max": 100,
+        "default": 20,
+        "step": 1,
+        "unit": "g/s",
+        "display_format": "%.0f"
+      },
+      {
+        "key": "grain_size",
+        "name": "Grain Size",
+        "type": "float",
+        "min": 10,
+        "max": 2000,
+        "default": 120,
+        "step": 1,
+        "unit": "ms",
+        "display_format": "%.0f"
+      },
+      {
+        "key": "grain_env",
+        "name": "Grn Env",
+        "type": "enum",
+        "options": [
+          "Hann",
+          "Tukey",
+          "Tri",
+          "Gauss",
+          "Expo",
+          "RevExpo",
+          "Trapez",
+          "Black"
+        ]
+      },
+      {
+        "key": "pitch",
+        "name": "Pitch",
+        "type": "float",
+        "min": -24,
+        "max": 24,
+        "default": 0,
+        "step": 1,
+        "unit": "st",
+        "display_format": "%.0f"
+      },
+      {
+        "key": "pitch_jitter",
+        "name": "Pch Jit",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0,
+        "step": 0.01
+      },
+      {
+        "key": "pan_spread",
+        "name": "Pan Sprd",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0.3,
+        "step": 0.01
+      },
+      {
+        "key": "reverse",
+        "name": "Rev",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0,
+        "step": 0.01
+      },
+      {
+        "key": "play_mode",
+        "name": "Play Mode",
+        "type": "enum",
+        "options": [
+          "Map",
+          "Notes",
+          "Mosaic"
+        ]
+      },
+      {
+        "key": "note_match",
+        "name": "Note",
+        "type": "enum",
+        "options": [
+          "Off",
+          "Pitch",
+          "Zone"
+        ]
+      },
+      {
+        "key": "dry_mix",
+        "name": "Dry Mix",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0,
+        "step": 0.01
+      },
+      {
+        "key": "volume",
+        "name": "Vol",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0.8,
+        "step": 0.01
+      },
+      {
+        "key": "width",
+        "name": "Width",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 1.0,
+        "step": 0.01
+      },
+      {
+        "key": "sat",
+        "name": "Sat",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0,
+        "step": 0.01
+      },
+      {
+        "key": "cutoff",
+        "name": "Filter",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0.5,
+        "step": 0.01
+      },
+      {
+        "key": "resonance",
+        "name": "Reso",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0,
+        "step": 0.01
+      },
+      {
+        "key": "pressure",
+        "name": "Pressure",
+        "type": "enum",
+        "options": [
+          "Off",
+          "Proximity",
+          "Density",
+          "Bright",
+          "Sat",
+          "Pitch",
+          "Grain",
+          "Jitter"
+        ]
+      },
+      {
+        "key": "press_amt",
+        "name": "Press Amt",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 1.0,
+        "step": 0.01
+      },
+      {
+        "key": "vel_amt",
+        "name": "Vel Amt",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 1.0,
+        "step": 0.01
+      },
+      {
+        "key": "poly",
+        "name": "Poly",
+        "type": "int",
+        "min": 1,
+        "max": 128,
+        "default": 48
+      },
+      {
+        "key": "grain_rand",
+        "name": "Grn Rand",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0,
+        "step": 0.01
+      },
+      {
+        "key": "amp_atk",
+        "name": "Amp Atk",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0.01,
+        "step": 0.01
+      },
+      {
+        "key": "amp_dec",
+        "name": "Amp Dec",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0.2,
+        "step": 0.01
+      },
+      {
+        "key": "amp_sus",
+        "name": "Amp Sus",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 1.0,
+        "step": 0.01
+      },
+      {
+        "key": "amp_rel",
+        "name": "Amp Rel",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0.2,
+        "step": 0.01
+      },
+      {
+        "key": "filt_amt",
+        "name": "Filt Env",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0.5,
+        "step": 0.01
+      },
+      {
+        "key": "filt_atk",
+        "name": "Filt Atk",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0.01,
+        "step": 0.01
+      },
+      {
+        "key": "filt_dec",
+        "name": "Filt Dec",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0.3,
+        "step": 0.01
+      },
+      {
+        "key": "filt_sus",
+        "name": "Filt Sus",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0,
+        "step": 0.01
+      }
     ]
   }
 }
