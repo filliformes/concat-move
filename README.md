@@ -78,14 +78,14 @@ Then power-cycle the Move.
 ## Quickstart
 
 1. **Enter Schwung** (long-press Track/Session/Note/Settings, or Shift+Vol+Track) and add **Concat** to a slot.
-2. On the **Corpus** page (the landing page), select the **Source** cell (knob 1), press the jog wheel to open the file browser (rooted at `/data/UserData/UserLibrary`), and pick any audio file. Concat analyses that file's whole folder.
+2. On the **Corpus** page (the landing page), select the **Source** cell (knob 1), press the jog wheel to open the file browser (rooted at `/data/UserData/UserLibrary`), and pick any audio file. By default Concat analyses that file's whole folder; set **Scope = File** (just below Source) to make that one sample the entire corpus.
 3. Watch **Analyze** count up to **100%**. A big folder at the default 128 MB pool can take about a minute the first time; after that it is cached and instant.
 4. It defaults to **Play Mode = Notes**, **Note Match = Zone**, so hit the pads: each pad plays a different part of your corpus.
 5. Prefer to explore by hand? Set **Play → Play Mode = Map**, go to the **Map** page, and sweep **X Pos / Y Pos**. Turn **Map Mode = Learned** for a spread-out timbre plane.
 
 From there, shape the sound on the Grain / Shape / Out pages.
 
-> If analysis feels slow on a huge library, lower **Pool Cap** (Corpus page) or pick a smaller sub-folder. The result is cached per folder, so re-picking the same folder loads in milliseconds.
+> If analysis feels slow on a huge library, lower **Pool** (Corpus page) or pick a smaller sub-folder. The result is cached per folder, so re-picking the same folder loads in milliseconds.
 
 ---
 
@@ -95,11 +95,11 @@ Set on the **Play** page, under **Play Mode**.
 
 | Mode | What it does |
 |------|--------------|
-| **Notes** *(default)* | Polyphonic. Each held pad is its own voice with its own amp envelope. **Note Match** decides how a note maps to the corpus (below). Good for playing the corpus like an instrument. |
+| **Notes** *(default)* | Polyphonic. Each held pad is its own voice with its own amp envelope. **Note** decides how a note maps to the corpus (below). Good for playing the corpus like an instrument. |
 | **Map** | Free navigation. The X/Y knobs move a point through the timbre map; grains play the nearest slices. Hold a **pad** to jump to a k-means timbre cluster; release to return to the knobs. Add the **LFO** (Mod page) to auto-travel. |
 | **Mosaic** | Reads the live line/mic input, extracts its timbre about every 23 ms, and plays the nearest corpus slices. Real-time audio mosaicking (beatbox into a corpus). Blend the dry input with **Dry Mix** (Out page). |
 
-**Note Match** (Notes mode):
+**Note** (Notes mode):
 - **Zone** *(default)*: each pad maps to a different position on the map (a different part of the corpus), at natural pitch. Pads become different sounds.
 - **Pitch**: picks the nearest-pitched slice and retunes it to the played note. Plays the corpus chromatically.
 - **Off**: plays the current map point, retuned to the note (a chromatic sampler of one spot).
@@ -113,45 +113,46 @@ Pages are reached from the Corpus (root) menu: **Map · Mod · Grain · Shape ·
 ### Corpus (root)
 | Knob | Range / options | Default | Notes |
 |------|-----------------|---------|-------|
-| **Source** | file browser (`.wav/.flac/.mp3`) | (none) | Pick a file; its folder (recursively) becomes the corpus. |
-| **Pool Cap** | 16 to 512 MB | 128 | RAM budget for pooled audio. Guarded against system OOM. |
+| **Source** | file browser (`.wav/.flac/.mp3`) | (none) | Pick an audio file. What becomes the corpus depends on **Scope** below. |
+| **Scope** | Folder / File | Folder | **Folder**: the picked file's folder, recursively (the usual corpus). **File**: that one sample becomes the whole corpus, still onset-sliced into many pieces. Changing it re-analyses the same pick. |
+| **Pool** | 16 to 512 MB | 128 | RAM budget for pooled audio. Guarded against system OOM. |
 | **Rescan** | trigger | (none) | Force a fresh re-analysis (rebuilds the disk cache). Turn right to fire. |
-| **Slice Mode** | Onset / Fixed | Onset | Onset uses spectral-flux slicing; Fixed uses fixed-length grains. |
-| **Min Slice** | 20 to 500 ms | 60 | Minimum slice length. |
-| **Max Slice** | 100 to 2000 ms | 400 | Maximum slice length. |
+| **Slice** | Onset / Fixed | Onset | Onset uses spectral-flux slicing; Fixed uses fixed-length grains. |
+| **Min Sl** | 20 to 500 ms | 60 | Minimum slice length. |
+| **Max Sl** | 100 to 2000 ms | 400 | Maximum slice length. |
 | **Analyze** | 0 to 100 % | (live) | Progress read-out (counts up during analysis). |
-| **Silence Gate** | 0 to 1 | 0.02 | Drops slices quieter than this (skips silence). |
+| **Sil Gate** | 0 to 1 | 0.02 | Drops slices quieter than this (skips silence). |
 
 ### Map
 | Knob | Range / options | Default | Notes |
 |------|-----------------|---------|-------|
-| **X Descriptor** | Bright / Pitch / Loud / Noisy / Rolloff / MFCC1-3 | Bright | X axis in **Raw** map mode. |
-| **Y Descriptor** | same list | Pitch | Y axis in Raw map mode. |
-| **X Position** | 0 to 1 | 0.5 | Position along X. A good host-LFO target. |
-| **Y Position** | 0 to 1 | 0.5 | Position along Y. |
+| **X Desc** | Bright / Pitch / Loud / Noisy / Rolloff / MFCC1-3 | Bright | X axis in **Raw** map mode. |
+| **Y Desc** | same list | Pitch | Y axis in Raw map mode. |
+| **X Pos** | 0 to 1 | 0.5 | Position along X. A good host-LFO target. |
+| **Y Pos** | 0 to 1 | 0.5 | Position along Y. |
 | **Map Mode** | Raw / Learned | Raw | **Learned** uses a PCA timbre plane (the two axes of greatest variation): a spread-out, coherent map instead of two hand-picked descriptors. |
 | **Radius** | 0 to 1 | 0.15 | How far around the target grains may wander (variety). |
-| **K Nearest** | 1 to 16 | 4 | Neighbourhood size for selection. |
-| **Repeat Avoid** | 0 to 16 | 4 | Excludes the last N played slices (CataRT "forbidding"). |
+| **K Near** | 1 to 16 | 4 | Neighbourhood size for selection. |
+| **Rpt Avoid** | 0 to 16 | 4 | Excludes the last N played slices (CataRT "forbidding"). |
 
 ### Mod
 | Knob | Range / options | Default | Notes |
 |------|-----------------|---------|-------|
 | **Follow** | Manual / LFO / Sequence | Manual | Manual is knobs only. **LFO** is free-running auto-travel. **Sequence** locks to the MIDI clock. |
 | **LFO Rate** | 0.01 to 10 | 0.2 | Hz in LFO mode; cycles per beat in Sequence mode (0.25 is 1 bar, 1 is a 1/4 note, 2 is a 1/8). |
-| **LFO Shape** | Circle / SineX / SineY / S&H | Circle | Circle is a Lissajous sweep; S&H does beat-synced random jumps (with Sequence). |
+| **LFO Shp** | Circle / SineX / SineY / S&H | Circle | Circle is a Lissajous sweep; S&H does beat-synced random jumps (with Sequence). |
 
 ### Grain
 | Knob | Range / options | Default | Notes |
 |------|-----------------|---------|-------|
 | **Density** | 1 to 100 g/s | 20 | Grains per second. |
 | **Grain Size** | 10 to 2000 ms | 120 | Grain length. Grains loop the slice (with a seam crossfade) when longer than it. |
-| **Grain Env** | Hann / Tukey / Tri / Gauss / Expo / RevExpo / Trapez / Black | Hann | Window shape. |
+| **Grn Env** | Hann / Tukey / Tri / Gauss / Expo / RevExpo / Trapez / Black | Hann | Window shape. |
 | **Pitch** | -24 to +24 st | 0 | Transpose the grains. |
-| **Pan Spread** | 0 to 1 | 0.3 | Random stereo spread per grain. |
-| **Grain Rand** | 0 to 1 | 0 | Randomises each grain's size (organic clouds). |
-| **Reverse** | 0 to 1 | 0 | Probability a grain plays backwards. |
-| **Pitch Jitter** | 0 to 1 | 0 | Random per-grain detune. |
+| **Pan Sprd** | 0 to 1 | 0.3 | Random stereo spread per grain. |
+| **Grn Rand** | 0 to 1 | 0 | Randomises each grain's size (organic clouds). |
+| **Rev** | 0 to 1 | 0 | Probability a grain plays backwards. |
+| **Pch Jit** | 0 to 1 | 0 | Random per-grain detune. |
 
 ### Shape (per-note envelopes, Notes mode)
 | Knob | Range | Default | Notes |
@@ -164,20 +165,20 @@ Pages are reached from the Corpus (root) menu: **Map · Mod · Grain · Shape ·
 | Knob | Range / options | Default | Notes |
 |------|-----------------|---------|-------|
 | **Play Mode** | Map / Notes / Mosaic | Notes | See [Play modes](#play-modes). |
-| **Note Match** | Off / Pitch / Zone | Zone | How pads map to the corpus (Notes mode). |
+| **Note** | Off / Pitch / Zone | Zone | How pads map to the corpus (Notes mode). |
 | **Pressure** | Off / Proximity / Density / Bright / Sat / Pitch / Grain / Jitter | Proximity | Which parameter pad pressure (aftertouch) modulates. |
 | **Press Amt** | 0 to 1 | 1.0 | Depth of the pressure modulation. |
-| **Vel Amount** | 0 to 1 | 1.0 | 0 ignores velocity (always full); 1 lets velocity fully scale volume. |
-| **Polyphony** | 1 to 128 | 48 | Grain-voice ceiling. |
+| **Vel Amt** | 0 to 1 | 1.0 | 0 ignores velocity (always full); 1 lets velocity fully scale volume. |
+| **Poly** | 1 to 128 | 48 | Grain-voice ceiling. |
 
 ### Out
 | Knob | Range | Default | Notes |
 |------|-------|---------|-------|
 | **Filter** | 0 to 1 | 0.5 | DJ-style bipolar filter: centre is bypass, left is a low-pass sweeping down, right is a high-pass sweeping up. |
-| **Resonance** | 0 to 1 | 0 | Filter resonance. |
-| **Saturation** | 0 to 1 | 0 | tanh drive (all modes). |
+| **Reso** | 0 to 1 | 0 | Filter resonance. |
+| **Sat** | 0 to 1 | 0 | tanh drive (all modes). |
 | **Dry Mix** | 0 to 1 | 0 | Blends the live input (Mosaic mode). |
-| **Volume** | 0 to 1 | 0.8 | Output level. |
+| **Vol** | 0 to 1 | 0.8 | Output level. |
 | **Width** | 0 to 1 | 1.0 | Stereo width. |
 
 ---
@@ -187,7 +188,7 @@ Pages are reached from the Corpus (root) menu: **Map · Mod · Grain · Shape ·
 - **Notes mode:** pads play polyphonic voices (up to 16 held notes, 128 grain voices total). Zone spreads pads across the corpus; Pitch plays it chromatically.
 - **Map mode:** hold a pad to jump the query to one of 16 k-means timbre clusters; release to return to the X/Y knobs or LFO.
 - **Pad pressure (aftertouch):** routed to the **Pressure** destination on the Play page. Squeeze a pad to open the filter (Bright), thicken the cloud (Density), pull nearby sounds (Proximity), and so on.
-- **Velocity:** scales volume, governed by **Vel Amount**.
+- **Velocity:** scales volume, governed by **Vel Amt**.
 - **MIDI:** pitch bend (transpose), MIDI clock (drives Sequence mode and the tempo-locked LFO), CC123 (all notes off).
 
 ---
@@ -198,8 +199,8 @@ Pages are reached from the Corpus (root) menu: **Map · Mod · Grain · Shape ·
 - **Self-playing timbre drift:** Map mode, Map Mode = Learned, Mod → Follow = LFO, Shape = Circle, LFO Rate around 0.1 Hz. Let it wander.
 - **Beat-synced glitch:** Map mode, Follow = Sequence, LFO Shape = S&H, LFO Rate = 2 (1/8-note jumps) with the Move's clock running.
 - **Live mosaic:** Play Mode = Mosaic, beatbox or sing into the input; raise **Density** and lower **Grain Size** for a tighter reconstruction; **Dry Mix** to taste.
-- **Smooth pad / drone:** long **Grain Size** (800 to 2000 ms), higher **Density**, low **Radius**, a soft **Grain Env** (Gauss). The concatenation-cost keeps consecutive grains flowing.
-- **Percussive stabs:** short **Grain Size** (20 to 60 ms), fast **Amp Atk/Rel**, **Grain Rand** up for variation.
+- **Smooth pad / drone:** long **Grain Size** (800 to 2000 ms), higher **Density**, low **Radius**, a soft **Grn Env** (Gauss). The concatenation-cost keeps consecutive grains flowing.
+- **Percussive stabs:** short **Grain Size** (20 to 60 ms), fast **Amp Atk/Rel**, **Grn Rand** up for variation.
 
 ---
 
@@ -256,7 +257,7 @@ tests/                 # on-device unit tests (analysis, corpus, engine, ingest,
 ## Troubleshooting
 
 - **Analyze stuck at 0%:** the folder has no decodable audio at that path, or the pick did not register. Re-select a file (not a folder) in the Source browser. Very large single files (over 128 MB) are skipped.
-- **Slow first analysis:** expected for big libraries. Lower **Pool Cap** or pick a sub-folder. It is cached afterward, so it is instant on re-pick. Hit **Rescan** to force a rebuild after changing files.
+- **Slow first analysis:** expected for big libraries. Lower **Pool** or pick a sub-folder. It is cached afterward, so it is instant on re-pick. Hit **Rescan** to force a rebuild after changing files.
 - **Source shows "float 0.00-1.00" or "None":** the module metadata did not load. Power-cycle the Move.
 - **No sound:** check Play Mode and Volume, confirm Analyze reached 100%, and that a note/pad is held (Notes) or X/Y is on a populated region (Map).
 

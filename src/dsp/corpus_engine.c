@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <math.h>
+#include <strings.h>
 #include <sys/stat.h>
 
 #define MAX_FILES        2048
@@ -295,6 +296,25 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
      * driven by how full the pool is decimates the retained (audible) slices so
      * they spread across the whole corpus — even within one big file — instead
      * of truncating to the first files. A corpus that fits keeps everything. */
+    /* Estimate the corpus size from file sizes so the decimation stride is right from the
+     * FIRST slice. A fullness-only curve front-loads badly when the pool fills inside the
+     * first file or two (a library of many short files); the curve below still corrects an
+     * off estimate. Rough per-format bytes -> mono-sample factors. */
+    double est_samples = 0.0;
+    for (int f = 0; f < nfiles; f++) {
+        struct stat est; if (stat(paths[f], &est) != 0) continue;
+        const char *e = strrchr(paths[f], '.');
+        double factor = 0.25;                                    /* wav 16-bit stereo: 4 B/sample */
+        if (e && !strcasecmp(e, ".flac")) factor = 0.5;          /* ~2:1 */
+        else if (e && !strcasecmp(e, ".mp3")) factor = 2.75;     /* ~10:1 */
+        est_samples += (double)est.st_size * factor;
+    }
+    int base_stride = 1;
+    if (pool_cap_samples > 0 && est_samples > (double)pool_cap_samples)
+        base_stride = (int)(est_samples / (double)pool_cap_samples + 0.5);
+    if (base_stride < 1) base_stride = 1;
+    if (base_stride > 256) base_stride = 256;
+
     int  oom_stop = 0;      /* set only on a real alloc failure — a hard stop */
     long slice_idx = 0;     /* global slice counter, for the decimation stride */
     for (int f = 0; f < nfiles && !oom_stop; f++) {
@@ -308,6 +328,7 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
             for (int s = 0; s < nr; s++) {
                 long pf = (long)ix->pool_len * 100 / (ix->pool_cap > 0 ? ix->pool_cap : 1);   /* % full */
                 int stride = pf < 75 ? 1 : pf < 88 ? 2 : pf < 95 ? 4 : 8;   /* pack to 75%, then thin the tail */
+                if (base_stride > stride) stride = base_stride;             /* size-estimate floor */
                 if ((slice_idx++ % stride) != 0) continue;         /* decimate as the pool fills */
                 int slen = ranges[s].len;
                 if (ix->pool_len + slen > ix->pool_cap) continue;  /* no room → drop audio, keep scanning */

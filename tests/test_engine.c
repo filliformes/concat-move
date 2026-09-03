@@ -1,6 +1,7 @@
 /* Concat — corpus engine test: build a real index+pool from a device folder. */
 #include "corpus_engine.h"
 #include "grain.h"
+#include "ingest.h"
 #include <stdio.h>
 #include <math.h>
 #include <time.h>
@@ -17,7 +18,15 @@ static double qn_range(corpus_index_t *x, int d) {   /* spread of one descriptor
 }
 
 int main(void) {
-    const char *folder = "/data/UserData/UserLibrary/Samples/MAITRISE";
+    /* Discover a corpus folder instead of hardcoding one: the user's sample library
+     * gets reorganised, and a stale path made this whole suite fail spuriously. */
+    static corpus_folder_t folders[INGEST_MAX_FOLDERS];
+    int nfound = ingest_scan_folders(folders, INGEST_MAX_FOLDERS), pick = -1;
+    for (int i = 0; i < nfound; i++)
+        if (folders[i].nfiles >= 5 && (pick < 0 || folders[i].nfiles > folders[pick].nfiles)) pick = i;
+    if (pick < 0) { printf("  FAIL no corpus folder with >=5 audio files found\n\n0 passed, 1 failed\n"); return 1; }
+    const char *folder = folders[pick].path;
+    printf("    corpus: %s (%d files)\n", folder, folders[pick].nfiles);
     int prog = 0;
     /* ~1M-sample pool (~23s) so analysis stops after a few files → fast test. */
     struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0);
