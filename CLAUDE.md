@@ -136,7 +136,12 @@ clock reaches `on_midi` as len==1 for `follow=Sequence` / tempo-synced `mosaic_r
 - `"component_type":"sound_generator"` and `"raw_midi":true` at **root** of module.json (not only
   in capabilities). `"dsp":"dsp.so"`, `"audio_out":true`,`"midi_in":true` in capabilities.
 - Persist all params via `get_param("state")` / restore from `config_json` in `create_instance`.
-- chain_params: prefer module.json (`return -1` from DSP) once >~40 params / >~3.8 KB JSON.
+- chain_params: MUST be DSP-served (return the JSON from `get_param`). The module.json
+  (`return -1`) fallback does NOT render the filepath Source picker on device. Schwung >= 1.3.0
+  raised `SHADOW_PARAM_VALUE_LEN` to **64 KB** (was ~4 KB), so full labels + step fit with room
+  to spare — Concat now serves ~4.9 KB and REQUIRES the Move to be on Schwung 1.3.0+.
+- v1.3.0 also adds `visible_if` (level/param conditional visibility), `capabilities.claims_ccs`
+  / `claims_edit_ccs` (grab CCs + Undo/Copy/Delete gestures), and more-consistent canvas UI.
 - Async asset load = Mello pattern (pthread worker + `atomic_exchange` pointer swap).
 
 ---

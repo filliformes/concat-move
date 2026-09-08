@@ -47,6 +47,6 @@ void query_target_full(const float *robust_vec, float *t, float *w);
  * Euclidean distance, then a random pick among the first ceil(1+radius*(k-1)) of
  * them, excluding the repeat-avoid ring. Returns a slice index, or -1 if empty.
  * Pushes the chosen index onto the ring. */
-int  query_select(query_t *q, const float *t, const float *w, int k, float radius);
+int  query_select(query_t *q, const float *t, const float *w, int k, float radius, float smooth);
 
 #endif /* CONCAT_QUERY_H */

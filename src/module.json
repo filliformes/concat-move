@@ -86,8 +86,8 @@
             "repeat_avoid"
           ],
           "params": [
-            "x_desc",
-            "y_desc",
+            { "key": "x_desc", "visible_if": { "param": "map_mode", "not_equals": "Learned" } },
+            { "key": "y_desc", "visible_if": { "param": "map_mode", "not_equals": "Learned" } },
             "x_pos",
             "y_pos",
             "map_mode",
@@ -154,7 +154,7 @@
           ],
           "params": [
             "play_mode",
-            "note_match",
+            { "key": "note_match", "visible_if": { "param": "play_mode", "equals": "Notes" } },
             "pressure",
             "press_amt",
             "vel_amt",
@@ -218,12 +218,14 @@
             "follow",
             "lfo_rate",
             "lfo_shape",
+            "smooth",
             "src_scope"
           ],
           "params": [
             "follow",
-            "lfo_rate",
-            "lfo_shape",
+            { "key": "lfo_rate",  "visible_if": { "param": "follow", "not_equals": "Manual" } },
+            { "key": "lfo_shape", "visible_if": { "param": "follow", "not_equals": "Manual" } },
+            "smooth",
             "src_scope"
           ]
         }
@@ -259,7 +261,7 @@
       },
       {
         "key": "pool_mb",
-        "name": "Pool",
+        "name": "Pool Cap",
         "type": "int",
         "min": 16,
         "max": 512,
@@ -276,7 +278,7 @@
       },
       {
         "key": "slice_mode",
-        "name": "Slice",
+        "name": "Slice Mode",
         "type": "enum",
         "options": [
           "Onset",
@@ -285,7 +287,7 @@
       },
       {
         "key": "min_slice_ms",
-        "name": "Min Sl",
+        "name": "Min Slice",
         "type": "float",
         "min": 20,
         "max": 500,
@@ -296,7 +298,7 @@
       },
       {
         "key": "max_slice_ms",
-        "name": "Max Sl",
+        "name": "Max Slice",
         "type": "float",
         "min": 100,
         "max": 2000,
@@ -316,7 +318,7 @@
       },
       {
         "key": "silence_gate",
-        "name": "Sil Gate",
+        "name": "Silence Gate",
         "type": "float",
         "min": 0,
         "max": 1,
@@ -333,7 +335,7 @@
       },
       {
         "key": "x_desc",
-        "name": "X Desc",
+        "name": "X Descriptor",
         "type": "enum",
         "options": [
           "Bright",
@@ -348,7 +350,7 @@
       },
       {
         "key": "y_desc",
-        "name": "Y Desc",
+        "name": "Y Descriptor",
         "type": "enum",
         "options": [
           "Bright",
@@ -363,7 +365,7 @@
       },
       {
         "key": "x_pos",
-        "name": "X Pos",
+        "name": "X Position",
         "type": "float",
         "min": 0,
         "max": 1,
@@ -371,7 +373,7 @@
       },
       {
         "key": "y_pos",
-        "name": "Y Pos",
+        "name": "Y Position",
         "type": "float",
         "min": 0,
         "max": 1,
@@ -387,7 +389,7 @@
       },
       {
         "key": "k_nearest",
-        "name": "K Near",
+        "name": "K Nearest",
         "type": "int",
         "min": 1,
         "max": 16,
@@ -398,18 +400,27 @@
         "name": "Follow",
         "type": "enum",
         "options": [
-          "Man",
+          "Manual",
           "LFO",
-          "Seq"
+          "Sequence"
         ]
       },
       {
         "key": "repeat_avoid",
-        "name": "Rpt Avoid",
+        "name": "Repeat Avoid",
         "type": "int",
         "min": 0,
         "max": 16,
         "default": 4
+      },
+      {
+        "key": "smooth",
+        "name": "Smooth",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0.35,
+        "step": 0.01
       },
       {
         "key": "lfo_rate",
@@ -427,7 +438,7 @@
       },
       {
         "key": "lfo_shape",
-        "name": "LFO Shp",
+        "name": "LFO Shape",
         "type": "enum",
         "options": [
           "Circle",
@@ -464,7 +475,7 @@
       },
       {
         "key": "grain_env",
-        "name": "Grn Env",
+        "name": "Grain Env",
         "type": "enum",
         "options": [
           "Hann",
@@ -490,7 +501,7 @@
       },
       {
         "key": "pitch_jitter",
-        "name": "Pch Jit",
+        "name": "Pitch Jitter",
         "type": "float",
         "min": 0,
         "max": 1,
@@ -498,7 +509,7 @@
       },
       {
         "key": "pan_spread",
-        "name": "Pan Sprd",
+        "name": "Pan Spread",
         "type": "float",
         "min": 0,
         "max": 1,
@@ -506,7 +517,7 @@
       },
       {
         "key": "reverse",
-        "name": "Rev",
+        "name": "Reverse",
         "type": "float",
         "min": 0,
         "max": 1,
@@ -524,7 +535,7 @@
       },
       {
         "key": "note_match",
-        "name": "Note",
+        "name": "Note Match",
         "type": "enum",
         "options": [
           "Off",
@@ -542,7 +553,7 @@
       },
       {
         "key": "volume",
-        "name": "Vol",
+        "name": "Volume",
         "type": "float",
         "min": 0,
         "max": 1,
@@ -558,7 +569,7 @@
       },
       {
         "key": "sat",
-        "name": "Sat",
+        "name": "Saturation",
         "type": "float",
         "min": 0,
         "max": 1,
@@ -575,7 +586,7 @@
       },
       {
         "key": "resonance",
-        "name": "Reso",
+        "name": "Resonance",
         "type": "float",
         "min": 0,
         "max": 1,
@@ -599,7 +610,7 @@
       },
       {
         "key": "press_amt",
-        "name": "Press Amt",
+        "name": "Pressure Amt",
         "type": "float",
         "min": 0,
         "max": 1,
@@ -607,7 +618,7 @@
       },
       {
         "key": "vel_amt",
-        "name": "Vel Amt",
+        "name": "Velocity Amt",
         "type": "float",
         "min": 0,
         "max": 1,
@@ -623,7 +634,7 @@
       },
       {
         "key": "grain_rand",
-        "name": "Grn Rand",
+        "name": "Grain Random",
         "type": "float",
         "min": 0,
         "max": 1,
@@ -631,7 +642,7 @@
       },
       {
         "key": "amp_atk",
-        "name": "Amp Atk",
+        "name": "Amp Attack",
         "type": "float",
         "min": 0,
         "max": 1,
@@ -643,7 +654,7 @@
       },
       {
         "key": "amp_dec",
-        "name": "Amp Dec",
+        "name": "Amp Decay",
         "type": "float",
         "min": 0,
         "max": 1,
@@ -655,7 +666,7 @@
       },
       {
         "key": "amp_sus",
-        "name": "Amp Sus",
+        "name": "Amp Sustain",
         "type": "float",
         "min": 0,
         "max": 1,
@@ -667,7 +678,7 @@
       },
       {
         "key": "amp_rel",
-        "name": "Amp Rel",
+        "name": "Amp Release",
         "type": "float",
         "min": 0,
         "max": 1,
@@ -679,7 +690,7 @@
       },
       {
         "key": "filt_amt",
-        "name": "Filt Env",
+        "name": "Filter Env",
         "type": "float",
         "min": 0,
         "max": 1,
@@ -687,7 +698,7 @@
       },
       {
         "key": "filt_atk",
-        "name": "Filt Atk",
+        "name": "Filter Attack",
         "type": "float",
         "min": 0,
         "max": 1,
@@ -695,7 +706,7 @@
       },
       {
         "key": "filt_dec",
-        "name": "Filt Dec",
+        "name": "Filter Decay",
         "type": "float",
         "min": 0,
         "max": 1,
@@ -703,7 +714,7 @@
       },
       {
         "key": "filt_sus",
-        "name": "Filt Sus",
+        "name": "Filter Sustain",
         "type": "float",
         "min": 0,
         "max": 1,

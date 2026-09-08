@@ -44,6 +44,7 @@ typedef struct {
 
 typedef struct {
     int   k_nearest;   float radius;
+    float smooth;                  /* 0..1 concat-cost continuity weight (grain-to-grain smoothing) */
     float density;                 /* grains/s */
     float grain_size_ms;
     float grain_rand;              /* 0..1 random size spread per grain */

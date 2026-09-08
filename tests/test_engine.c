@@ -55,15 +55,15 @@ int main(void) {
     /* Query: navigate the map, get a slice. */
     float t[NDESC], w[NDESC];
     query_target_map(&ix->query, D_CENTROID_MEAN, D_PITCH, 0.5f, 0.5f, t, w);
-    int sel = query_select(&ix->query, t, w, 4, 0.3f);
+    int sel = query_select(&ix->query, t, w, 4, 0.3f, 0.35f);
     snprintf(buf, sizeof(buf), "slice %d (off %d, len %d)", sel, sel >= 0 ? ix->slices[sel].pool_off : -1, sel >= 0 ? ix->slices[sel].len : -1);
     check("query returns a valid slice", sel >= 0 && sel < ix->nslices, buf);
 
     /* Different map corners give (usually) different slices. */
     query_target_map(&ix->query, D_CENTROID_MEAN, D_PITCH, 0.0f, 0.0f, t, w);
-    int s0 = query_select(&ix->query, t, w, 1, 0.0f);
+    int s0 = query_select(&ix->query, t, w, 1, 0.0f, 0.35f);
     query_target_map(&ix->query, D_CENTROID_MEAN, D_PITCH, 1.0f, 1.0f, t, w);
-    int s1 = query_select(&ix->query, t, w, 1, 0.0f);
+    int s1 = query_select(&ix->query, t, w, 1, 0.0f, 0.35f);
     snprintf(buf, sizeof(buf), "corner0=%d corner1=%d", s0, s1);
     check("map corners resolve to slices", s0 >= 0 && s1 >= 0, buf);
 

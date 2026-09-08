@@ -82,7 +82,7 @@ static inline float grain_env_val(int env, int age, int glen) {
 static void spawn_grain(grain_engine_t *ge, corpus_index_t *ix,
                         const float *target, const float *weight,
                         const grain_params_t *gp, float gain, const grain_amp_t *amp, float target_hz, int sr) {
-    int sel = query_select(&ix->query, target, weight, gp->k_nearest, gp->radius);
+    int sel = query_select(&ix->query, target, weight, gp->k_nearest, gp->radius, gp->smooth);
     if (sel < 0 || sel >= ix->nslices || ix->slices[sel].len < 1) return;   /* need a playable slice */
 
     /* Pick a free voice within the polyphony cap, else steal the grain NEAREST ITS END

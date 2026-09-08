@@ -72,14 +72,15 @@ static float slice_dist2(const query_t *q, int a, int b) {
 }
 
 /* CataRT-style concatenation cost weight (blend of target cost and continuity with the
- * last-played slice). Always-on and moderate: smooths grain-to-grain jumps while `radius`
- * still governs variety. Dialable via a knob is a follow-up (chain_params at ceiling). */
-#define CONCAT_WEIGHT 0.35f
-
-int query_select(query_t *q, const float *t, const float *w, int k, float radius) {
+ * last-played slice): smooths grain-to-grain jumps while `radius` still governs variety.
+ * Now dialable via the Smooth knob (0 = pure target nearest, 1 = maximum continuity);
+ * default 0.35. */
+int query_select(query_t *q, const float *t, const float *w, int k, float radius, float smooth) {
     if (q->nslices <= 0) return -1;
     if (k < 1) k = 1;
     if (k > QUERY_RING_MAX) k = QUERY_RING_MAX;
+    if (smooth < 0.0f) smooth = 0.0f;
+    if (smooth > 1.0f) smooth = 1.0f;
 
     float bd[QUERY_RING_MAX]; int bi[QUERY_RING_MAX]; int nb = 0;  /* K-best, ascending */
     for (int i = 0; i < q->nslices; i++) {
@@ -134,7 +135,7 @@ int query_select(query_t *q, const float *t, const float *w, int k, float radius
         float wt[QUERY_RING_MAX], wsum = 0.0f;
         for (int j = 0; j < pool; j++) {
             if (bi[j] == q->last_sel) { wt[j] = 0.0f; continue; }   /* never re-pick the same slice */
-            float comb = (1.0f - CONCAT_WEIGHT) * (bd[j] - tmin) / tr + CONCAT_WEIGHT * (cd[j] - cmin) / cr;
+            float comb = (1.0f - smooth) * (bd[j] - tmin) / tr + smooth * (cd[j] - cmin) / cr;
             wt[j] = 1.0f - comb; if (wt[j] < 0.05f) wt[j] = 0.05f;   /* floor keeps all reachable */
             wsum += wt[j];
         }
