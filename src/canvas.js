@@ -32,8 +32,9 @@ globalThis.canvas_overlay = {
     if (W < 4 || H < 4) return;
     const vals = (o && o.values) || {};
 
-    const sx = (v) => (+v) * (W - 1);
-    const sy = (v) => (1 - (+v)) * (H - 1);   /* normalized y-up → pixel y-down */
+    /* DSP sends int 0..1000 coords (cheaper to format than %.3f). */
+    const sx = (v) => ((+v) / 1000) * (W - 1);
+    const sy = (v) => (1 - (+v) / 1000) * (H - 1);   /* y-up → pixel y-down */
 
     /* Scatter background: normalized "x,y;x,y;..." — one lit pixel per slice. */
     const ptsRaw = String(vals.map_pts || '');
@@ -52,7 +53,7 @@ globalThis.canvas_overlay = {
     const live = String(vals.map_live || '0,0,0').split(',');
     if (live.length >= 3) {
       const qx = sx(live[0]), qy = sy(live[1]);
-      const qr = (+live[2]) * (Math.min(W, H) * 0.5);
+      const qr = ((+live[2]) / 1000) * (Math.min(W, H) * 0.5);
 
       /* Trail oldest→newest so the freshest sits on top; fades with age. */
       for (let i = live.length - 2; i >= 3; i -= 2) {

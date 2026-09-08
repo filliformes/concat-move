@@ -31,7 +31,9 @@ typedef struct {
     float     pca_mean[NDESC];      /* descriptor-space mean */
     float     pca_axis[2][NDESC];   /* top-2 principal axes (unit vectors) */
     float     pca_min[2], pca_max[2];  /* projection range, for 0..1 nav mapping */
-    char      scatter_bmp[600];    /* on-disk 128x64 8-bit BMP scatter (for canvas.js) */
+    char      scatter_bmp[600];    /* on-disk 128x64 8-bit BMP scatter (legacy; unused by as_page) */
+    char      map_pts[4096];       /* cached scatter as int 0..1000 "x,y;..." for the View canvas
+                                    * (built once per load by the DSP; runtime-only, not cached to disk) */
 } corpus_index_t;
 
 /* Build an index+pool from every audio file in `folder`.

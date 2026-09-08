@@ -274,6 +274,8 @@ typedef struct {
 } concat_t;
 
 static void set_param(void *instance, const char *key, const char *val);   /* fwd */
+static void map_project(const corpus_index_t *ix, int idx, float *px, float *py);   /* fwd */
+static void build_map_pts(corpus_index_t *ix);   /* fwd: cache the scatter point string */
 
 /* ── Helpers ────────────────────────────────────────────────────────────────── */
 
@@ -489,6 +491,7 @@ static void *analyst_thread(void *arg) {
             inst->progress = 0;
             corpus_index_t *ni = corpus_index_build(path, 44100, sm, mn, mx, sg, ps,
                                                     CONCAT_CACHE_DIR, force, &inst->progress);
+            build_map_pts(ni);   /* cache the scatter string before publishing (worker, once per load) */
             corpus_index_t *old = __atomic_exchange_n(&inst->index, ni, __ATOMIC_ACQ_REL);
             if (old) { usleep(60000); corpus_index_free(old); }  /* let one render block pass */
             inst->progress = ni ? 100 : 0;
@@ -694,6 +697,26 @@ static void map_project(const corpus_index_t *ix, int idx, float *px, float *py)
     *px = (float)p1; *py = (float)p2;
 }
 
+/* Build the cached scatter string ONCE per corpus (analyst worker), so serving
+ * map_view's scatter is a memcpy on the SPI callback instead of ~360 projections
+ * + float formats every rotation stop. Int 0..1000 coords ("x,y;x,y;...") — ~3x
+ * cheaper to format than %.3f and finer than the 128px band. Strided to a cap. */
+static void build_map_pts(corpus_index_t *ix) {
+    if (!ix) return;
+    ix->map_pts[0] = 0;
+    if (ix->nslices <= 0) return;
+    const int CAP = 360, LIM = (int)sizeof(ix->map_pts) - 16;
+    int step = (ix->nslices + CAP - 1) / CAP;
+    if (step < 1) step = 1;
+    int n = 0;
+    for (int i = 0; i < ix->nslices; i += step) {
+        if (n >= LIM) break;
+        float px, py; map_project(ix, i, &px, &py);
+        n += snprintf(ix->map_pts + n, sizeof(ix->map_pts) - n, "%s%d,%d",
+                      n ? ";" : "", (int)(px * 1000.0f + 0.5f), (int)(py * 1000.0f + 0.5f));
+    }
+}
+
 /* ── get_param ──────────────────────────────────────────────────────────────── */
 
 static int get_param(void *instance, const char *key, char *buf, int buf_len) {
@@ -764,35 +787,30 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
         corpus_index_t *ix = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE);
         return snprintf(buf, buf_len, "%s", (ix && ix->scatter_bmp[0]) ? ix->scatter_bmp : "");
     }
-    if (strcmp(key, "map_live") == 0) {   /* normalized 0..1: qx,qy,qr + last N played-slice x,y pairs */
+    if (strcmp(key, "map_live") == 0) {   /* int 0..1000: qx,qy,qr + last N played-slice x,y pairs */
         corpus_index_t *ix = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE);
         if (!ix || ix->nslices <= 0) return snprintf(buf, buf_len, "0,0,0");
-        float xp = inst->pv[P_X_POS], yp = inst->pv[P_Y_POS], r = inst->pv[P_RADIUS];
-        int n = snprintf(buf, buf_len, "%.3f,%.3f,%.3f", (double)xp, (double)yp, (double)r);
+        int qx = (int)(inst->pv[P_X_POS] * 1000.0f + 0.5f);
+        int qy = (int)(inst->pv[P_Y_POS] * 1000.0f + 0.5f);
+        int qr = (int)(inst->pv[P_RADIUS] * 1000.0f + 0.5f);
+        int n = snprintf(buf, buf_len, "%d,%d,%d", qx, qy, qr);
         /* Trail: the last few played slices, projected onto the map plane. The
-         * canvas (as_page drawPage) scales these to its band, so emit 0..1. */
+         * canvas (as_page drawPage) scales these to its band, so emit 0..1000. */
         int rc = ix->query.ring_count, rh = ix->query.ring_head, cap = ix->query.ring_cap;
         for (int t = 0; t < rc && t < 8; t++) {
             int idx = ix->query.ring[(rh - 1 - t + cap * 2) % (cap ? cap : 1)];
             if (idx < 0 || idx >= ix->nslices) continue;
             float tx, ty; map_project(ix, idx, &tx, &ty);
-            if (n < buf_len - 16) n += snprintf(buf + n, buf_len - n, ",%.3f,%.3f", (double)tx, (double)ty);
+            if (n < buf_len - 12)
+                n += snprintf(buf + n, buf_len - n, ",%d,%d",
+                              (int)(tx * 1000.0f + 0.5f), (int)(ty * 1000.0f + 0.5f));
         }
         return n;
     }
-    if (strcmp(key, "map_pts") == 0) {   /* normalized 0..1 scatter, one point per slice (strided to a cap) */
+    if (strcmp(key, "map_pts") == 0) {   /* cached scatter (built once per load); serve = memcpy */
         corpus_index_t *ix = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE);
-        if (!ix || ix->nslices <= 0) { if (buf_len > 0) buf[0] = 0; return 0; }
-        const int CAP = 360;
-        int step = (ix->nslices + CAP - 1) / CAP;
-        if (step < 1) step = 1;
-        int n = 0;
-        for (int i = 0; i < ix->nslices; i += step) {
-            if (n >= buf_len - 16) break;
-            float px, py; map_project(ix, i, &px, &py);
-            n += snprintf(buf + n, buf_len - n, "%s%.3f,%.3f", n ? ";" : "", (double)px, (double)py);
-        }
-        return n;
+        if (!ix || !ix->map_pts[0]) { if (buf_len > 0) buf[0] = 0; return 0; }
+        return snprintf(buf, buf_len, "%s", ix->map_pts);
     }
     if (strcmp(key, "map_view") == 0) return snprintf(buf, buf_len, "map");   /* canvas cell needs a value */
     /* Recipe browser triple (list / count / name) — served every tick while browsing. */
