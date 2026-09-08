@@ -39,6 +39,8 @@
 #include <fcntl.h>
 #include <sched.h>
 #include <pthread.h>
+#include <dirent.h>
+#include <sys/stat.h>
 #include "ingest.h"
 #include "corpus_engine.h"
 #include "grain.h"
@@ -110,12 +112,12 @@ typedef struct {
 
 static const pdef_t PARAMS[NPARAMS] = {
     /* Corpus */
-    [P_SRC_SCOPE]     = {"src_scope",    "Scope",        T_ENUM,   0,   1, 1,  ENV_SRC_SCOPE, 2, 0},   /* Folder | File */
-    [P_POOL_MB]       = {"pool_mb",      "Pool Cap",     T_INT,   16, 512, 1,  NULL, 0, 128, "MB"},
+    [P_SRC_SCOPE]     = {"src_scope",    "Scope",        T_ENUM,   0,   1, 1,  ENV_SRC_SCOPE, 2, 1},   /* Folder | File (default File) */
+    [P_POOL_MB]       = {"pool_mb",      "Pool Cap",     T_INT,   16, 512, 1,  NULL, 0, 512, "MB"},
     [P_RESCAN]        = {"rescan",       "Rescan",       T_INT,    0, 127, 1,  NULL, 0, 0},
     [P_SLICE_MODE]    = {"slice_mode",   "Slice Mode",   T_ENUM,   0,   1, 1,  ENV_SLICE_MODE, 2, 0},
-    [P_MIN_SLICE]     = {"min_slice_ms", "Min Slice",    T_FLOAT, 20, 500, 5,  NULL, 0, 60,  "ms"},
-    [P_MAX_SLICE]     = {"max_slice_ms", "Max Slice",    T_FLOAT,100,2000,10,  NULL, 0, 400, "ms"},
+    [P_MIN_SLICE]     = {"min_slice_ms", "Min Slice",    T_FLOAT, 20, 500, 5,  NULL, 0, 20,  "ms"},
+    [P_MAX_SLICE]     = {"max_slice_ms", "Max Slice",    T_FLOAT,100,2000,10,  NULL, 0, 2000,"ms"},
     [P_ANALYZE]       = {"analyze",      "Analyze",      T_INT,    0, 100, 1,  NULL, 0, 0},
     [P_SILENCE_GATE]  = {"silence_gate", "Silence Gate", T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.02f},
     /* Map */
@@ -154,16 +156,16 @@ static const pdef_t PARAMS[NPARAMS] = {
     [P_CUTOFF]        = {"cutoff",       "Filter",       T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.5f, NULL, "false"},
     [P_RESO]          = {"resonance",    "Resonance",    T_FLOAT,  0,   1, 0.01f, NULL, 0, 0,    NULL, "false"},
     /* Expression */
-    [P_PRESSURE]      = {"pressure",     "Pressure",     T_ENUM,   0,   7, 1,  ENV_PRESSURE, 8, 1},   /* default Proximity */
+    [P_PRESSURE]      = {"pressure",     "Pressure",     T_ENUM,   0,   7, 1,  ENV_PRESSURE, 8, 2},   /* default Density */
     [P_PRESS_AMT]     = {"press_amt",    "Pressure Amt", T_FLOAT,  0,   1, 0.01f, NULL, 0, 1.0f},
-    [P_VEL_AMT]       = {"vel_amt",      "Velocity Amt", T_FLOAT,  0,   1, 0.01f, NULL, 0, 1.0f},
+    [P_VEL_AMT]       = {"vel_amt",      "Velocity Amt", T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.8f},
     [P_POLY]          = {"poly",         "Polyphony",    T_INT,    1, 128, 1,  NULL, 0, 48},
     /* Shape — amp + filter envelopes (0..1 time knobs mapped to seconds; sus/amt are levels) */
     [P_AMP_ATK]       = {"amp_atk",      "Amp Attack",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.01f, NULL, "{\"group\":\"amp\",\"role\":\"attack\"}"},
     [P_AMP_DEC]       = {"amp_dec",      "Amp Decay",    T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.2f,  NULL, "{\"group\":\"amp\",\"role\":\"decay\"}"},
     [P_AMP_SUS]       = {"amp_sus",      "Amp Sustain",  T_FLOAT,  0,   1, 0.01f, NULL, 0, 1.0f,  NULL, "{\"group\":\"amp\",\"role\":\"sustain\"}"},
     [P_AMP_REL]       = {"amp_rel",      "Amp Release",  T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.2f,  NULL, "{\"group\":\"amp\",\"role\":\"release\"}"},
-    [P_FILT_AMT]      = {"filt_amt",     "Filter Env",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.5f},   /* 0.5 = no env */
+    [P_FILT_AMT]      = {"filt_amt",     "Filter Env",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.45f},
     [P_FILT_ATK]      = {"filt_atk",     "Filter Attack",T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.01f},
     [P_FILT_DEC]      = {"filt_dec",     "Filter Decay", T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.3f},
     [P_FILT_SUS]      = {"filt_sus",     "Filter Sustain",T_FLOAT, 0,   1, 0.01f, NULL, 0, 0},
@@ -178,13 +180,19 @@ static const pdef_t PARAMS[NPARAMS] = {
 static const char UI_HIERARCHY[] =
 "{\"modes\":null,\"levels\":{"
 "\"root\":{\"name\":\"Concat\",\"knobs\":[\"x_pos\",\"y_pos\",\"density\",\"grain_size\",\"amp_atk\",\"amp_rel\",\"poly\",\"cutoff\"],\"params\":[\"x_pos\",\"y_pos\",\"density\",\"grain_size\",\"amp_atk\",\"amp_rel\",\"poly\",\"cutoff\",{\"level\":\"view\",\"label\":\"View\"},{\"level\":\"corpus\",\"label\":\"Corpus\"},{\"level\":\"map\",\"label\":\"Map\"},{\"level\":\"mod_set\",\"label\":\"Mod & Set\"},{\"level\":\"grain\",\"label\":\"Grain\"},{\"level\":\"shape\",\"label\":\"Shape\"},{\"level\":\"play\",\"label\":\"Play\"},{\"level\":\"out\",\"label\":\"Out\"}]},"
-"\"view\":{\"name\":\"View\",\"knobs\":[\"map_view\"],\"params\":[\"map_view\"]},"
+/* View carries its own NAVIGATION knobs (radius / k-nearest / smooth alongside
+ * x/y). The planner builds both a knob-grid page and the as_page canvas page
+ * from the same knobs[] (the canvas encoders are that list; it cannot declare
+ * its own), and the only grid-suppression rule needs the set to duplicate an
+ * earlier-walked level (root). Sharing root's set would lose the nav knobs, so
+ * View deliberately keeps two pages: "View" (grid) then "View - 2" (the map). */
+"\"view\":{\"name\":\"View\",\"list_param\":\"preset_index\",\"count_param\":\"preset_count\",\"name_param\":\"preset_name\",\"knobs\":[\"x_pos\",\"y_pos\",\"radius\",\"density\",\"grain_size\",\"k_nearest\",\"smooth\",\"cutoff\"],\"params\":[\"map_view\",\"x_pos\",\"y_pos\",\"radius\",\"density\",\"grain_size\",\"k_nearest\",\"smooth\",\"cutoff\"]},"
 "\"corpus\":{\"name\":\"Corpus\",\"knobs\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"],\"params\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"]},"
-"\"mod_set\":{\"name\":\"Mod & Set\",\"knobs\":[\"follow\",\"lfo_rate\",\"lfo_shape\",\"smooth\",\"src_scope\"],\"params\":[\"follow\",{\"key\":\"lfo_rate\",\"visible_if\":{\"param\":\"follow\",\"not_equals\":\"Manual\"}},{\"key\":\"lfo_shape\",\"visible_if\":{\"param\":\"follow\",\"not_equals\":\"Manual\"}},\"smooth\",\"src_scope\"]},"
-"\"map\":{\"name\":\"Map\",\"knobs\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"map_mode\",\"radius\",\"k_nearest\",\"repeat_avoid\"],\"params\":[{\"key\":\"x_desc\",\"visible_if\":{\"param\":\"map_mode\",\"not_equals\":\"Learned\"}},{\"key\":\"y_desc\",\"visible_if\":{\"param\":\"map_mode\",\"not_equals\":\"Learned\"}},\"x_pos\",\"y_pos\",\"map_mode\",\"radius\",\"k_nearest\",\"repeat_avoid\"]},"
+"\"mod_set\":{\"name\":\"Mod & Set\",\"knobs\":[\"follow\",\"lfo_rate\",\"lfo_shape\",\"smooth\",\"src_scope\"],\"params\":[\"follow\",\"lfo_rate\",\"lfo_shape\",\"smooth\",\"src_scope\"]},"
+"\"map\":{\"name\":\"Map\",\"knobs\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"map_mode\",\"radius\",\"k_nearest\",\"repeat_avoid\"],\"params\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"map_mode\",\"radius\",\"k_nearest\",\"repeat_avoid\"]},"
 "\"grain\":{\"name\":\"Grain\",\"knobs\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pan_spread\",\"grain_rand\",\"reverse\",\"pitch_jitter\"],\"params\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pan_spread\",\"grain_rand\",\"reverse\",\"pitch_jitter\"]},"
 "\"shape\":{\"name\":\"Shape\",\"knobs\":[\"amp_atk\",\"amp_dec\",\"amp_sus\",\"amp_rel\",\"filt_amt\",\"filt_atk\",\"filt_dec\",\"filt_sus\"],\"params\":[\"amp_atk\",\"amp_dec\",\"amp_sus\",\"amp_rel\",\"filt_amt\",\"filt_atk\",\"filt_dec\",\"filt_sus\"]},"
-"\"play\":{\"name\":\"Play\",\"knobs\":[\"play_mode\",\"note_match\",\"pressure\",\"press_amt\",\"vel_amt\",\"poly\"],\"params\":[\"play_mode\",{\"key\":\"note_match\",\"visible_if\":{\"param\":\"play_mode\",\"equals\":\"Notes\"}},\"pressure\",\"press_amt\",\"vel_amt\",\"poly\"]},"
+"\"play\":{\"name\":\"Play\",\"knobs\":[\"play_mode\",\"note_match\",\"pressure\",\"press_amt\",\"vel_amt\",\"poly\"],\"params\":[\"play_mode\",\"note_match\",\"pressure\",\"press_amt\",\"vel_amt\",\"poly\"]},"
 "\"out\":{\"name\":\"Out\",\"knobs\":[\"cutoff\",\"resonance\",\"sat\",\"dry_mix\",\"volume\",\"width\"],\"params\":[\"cutoff\",\"resonance\",\"sat\",\"dry_mix\",\"volume\",\"width\"]}"
 "}}";
 
@@ -224,6 +232,8 @@ typedef struct {
     pthread_mutex_t  lock;
     pthread_cond_t   cond;
     int              arm;                /* a (re)analysis is requested */
+    int              auto_pick;          /* no saved corpus: discover a default on the analyst */
+    int              preset_idx;         /* current factory recipe (label; 0 = Init) */
     int              shutdown;
     int              analyst_started;
     char             pending_path[512];
@@ -286,6 +296,65 @@ static void apply_value(concat_t *inst, int idx, const char *val) {
      * → re-analyse or re-guard pool. Handled once the engine exists. */
 }
 
+/* ── Factory presets ("recipes") ─────────────────────────────────────────────
+ * Served to the host's preset browser through the ui_hierarchy triple on the
+ * View level (list_param=preset_index, count_param=preset_count,
+ * name_param=preset_name). Selecting one in the browser LOADS it. A recipe sets
+ * PLAY-scope params only ("k=v;k=v", enums by option name) and never touches the
+ * Corpus page: scope/pool/slicing are corpus-specific and would re-trigger
+ * analysis, and a baked file path would not exist on another Move. "Init"
+ * (empty kv) resets the play-scope params to their defaults.
+ * Starter set — tune freely; the names are what the browser shows. */
+typedef struct { const char *name; const char *kv; } recipe_t;
+static const recipe_t RECIPES[] = {
+    {"Init",     ""},
+    {"Cloud",    "play_mode=Map;follow=LFO;lfo_shape=Circle;lfo_rate=0.05;density=60;grain_size=400;grain_env=Hann;"
+                 "pan_spread=0.8;radius=0.4;smooth=0.6;k_nearest=6;amp_atk=0.3;amp_rel=0.6;width=1"},
+    {"Stutter",  "play_mode=Notes;note_match=Zone;density=30;grain_size=40;grain_env=Tukey;radius=0.05;k_nearest=2;"
+                 "smooth=0.1;repeat_avoid=0;amp_atk=0;amp_rel=0.05;pan_spread=0.2"},
+    {"Drone",    "play_mode=Map;follow=LFO;lfo_shape=Circle;lfo_rate=0.02;density=12;grain_size=1500;grain_env=Gauss;"
+                 "radius=0.3;smooth=0.8;amp_atk=0.6;amp_sus=1;amp_rel=0.8;width=1;pan_spread=0.6"},
+    {"Scatter",  "play_mode=Map;follow=LFO;lfo_shape=S&H;lfo_rate=2;density=40;grain_size=120;grain_rand=0.7;"
+                 "pitch_jitter=0.4;pan_spread=1;reverse=0.5;radius=0.9;k_nearest=16;smooth=0;repeat_avoid=16"},
+    {"Pitched",  "play_mode=Notes;note_match=Pitch;density=25;grain_size=150;pitch_jitter=0;radius=0.1;smooth=0.5;"
+                 "vel_amt=0.9;amp_atk=0.02;amp_rel=0.3;grain_env=Hann"},
+    {"Mosaic",   "play_mode=Mosaic;density=30;grain_size=80;radius=0.15;k_nearest=4;smooth=0.4;dry_mix=0.3;"
+                 "amp_atk=0.01;amp_rel=0.1;grain_env=Tukey"},
+    {"Sequence", "play_mode=Map;follow=Sequence;lfo_shape=Circle;lfo_rate=0.25;density=20;grain_size=200;"
+                 "radius=0.25;smooth=0.5;amp_rel=0.4;grain_env=Hann"},
+};
+#define NRECIPES ((int)(sizeof(RECIPES) / sizeof(RECIPES[0])))
+
+/* The Corpus page is the first 8 entries of the table; a recipe never writes them. */
+static int is_corpus_param(int i) { return i <= P_SILENCE_GATE; }
+
+static void apply_recipe(concat_t *inst, int idx) {
+    if (idx < 0) idx = 0;
+    if (idx >= NRECIPES) idx = NRECIPES - 1;
+    /* A recipe is absolute, not layered: reset play-scope params to defaults first. */
+    for (int i = 0; i < NPARAMS; i++)
+        if (!is_corpus_param(i)) inst->pv[i] = PARAMS[i].def;
+    /* "k=v;k=v" — short, bounded, no alloc (this runs on the SPI callback). */
+    const char *p = RECIPES[idx].kv;
+    while (p && *p) {
+        const char *end = strchr(p, ';'); if (!end) end = p + strlen(p);
+        const char *eq  = (const char *)memchr(p, '=', end - p);
+        if (eq && eq > p) {
+            char k[32], v[32];
+            int kl = (int)(eq - p), vl = (int)(end - eq - 1);
+            if (kl > 0 && kl < (int)sizeof k && vl >= 0 && vl < (int)sizeof v) {
+                memcpy(k, p, kl); k[kl] = 0; memcpy(v, eq + 1, vl); v[vl] = 0;
+                for (int i = 0; i < NPARAMS; i++)
+                    if (!is_corpus_param(i) && strcmp(k, PARAMS[i].key) == 0) { apply_value(inst, i, v); break; }
+            }
+        }
+        if (!*end) break;
+        p = end + 1;
+    }
+    inst->preset_idx = idx;
+    inst->lfo_shx = inst->pv[P_X_POS]; inst->lfo_shy = inst->pv[P_Y_POS];   /* re-centre the map LFO */
+}
+
 /* ── Engine: analyst worker + helpers ───────────────────────────────────────── */
 
 /* Map x_desc/y_desc enum (Bright/Pitch/Loud/Noisy/Rolloff/MFCC1-3) → descriptor index. */
@@ -322,6 +391,42 @@ static void set_corpus_path(concat_t *inst) {
     }
 }
 
+/* Default corpus when none is saved: the first audio file of the first sub-folder
+ * of the Samples root, both taken in name order. Worker-thread only (opendir /
+ * stat / malloc). Writes an absolute path to `out`; returns 1 on a hit. */
+#define CONCAT_SAMPLES_ROOT "/data/UserData/UserLibrary/Samples"
+static int auto_pick_corpus(char *out, int out_sz) {
+    DIR *d = opendir(CONCAT_SAMPLES_ROOT);
+    if (!d) return 0;
+    char first_dir[256] = {0};
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;                 /* skip ., .., hidden */
+        char full[INGEST_PATH];
+        snprintf(full, sizeof full, "%s/%s", CONCAT_SAMPLES_ROOT, e->d_name);
+        struct stat st;
+        if (stat(full, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+        if (first_dir[0] == 0 || strcmp(e->d_name, first_dir) < 0) {
+            strncpy(first_dir, e->d_name, sizeof first_dir - 1);
+            first_dir[sizeof first_dir - 1] = 0;
+        }
+    }
+    closedir(d);
+    if (first_dir[0] == 0) return 0;
+
+    char dir[INGEST_PATH];
+    snprintf(dir, sizeof dir, "%s/%s", CONCAT_SAMPLES_ROOT, first_dir);
+    char (*paths)[INGEST_PATH] = malloc(sizeof(*paths) * 256);
+    if (!paths) return 0;
+    int n = ingest_list_audio(dir, paths, 256);
+    if (n <= 0) { free(paths); return 0; }
+    int best = 0;                                          /* first file in name order */
+    for (int i = 1; i < n; i++) if (strcmp(paths[i], paths[best]) < 0) best = i;
+    strncpy(out, paths[best], out_sz - 1); out[out_sz - 1] = 0;
+    free(paths);
+    return 1;
+}
+
 /* Snapshot the corpus path + analysis params and wake the analyst.
  * force = 1 (rescan) rebuilds from scratch, ignoring the on-disk cache. */
 static void arm_analyst(concat_t *inst, int force) {
@@ -355,8 +460,23 @@ static void *analyst_thread(void *arg) {
 
     for (;;) {
         pthread_mutex_lock(&inst->lock);
-        while (!inst->arm && !inst->shutdown) pthread_cond_wait(&inst->cond, &inst->lock);
+        while (!inst->arm && !inst->auto_pick && !inst->shutdown) pthread_cond_wait(&inst->cond, &inst->lock);
         if (inst->shutdown) { pthread_mutex_unlock(&inst->lock); break; }
+
+        /* No saved corpus: discover a default (first file of the first Samples
+         * sub-folder) off the SPI path, then arm a normal build on it. */
+        if (inst->auto_pick) {
+            inst->auto_pick = 0;
+            pthread_mutex_unlock(&inst->lock);
+            char f[512];
+            if (inst->corpus_file[0] == 0 && auto_pick_corpus(f, sizeof f)) {
+                strncpy(inst->corpus_file, f, sizeof(inst->corpus_file) - 1);
+                inst->corpus_file[sizeof(inst->corpus_file) - 1] = 0;
+                set_corpus_path(inst);
+                arm_analyst(inst, 0);
+            }
+            continue;
+        }
         inst->arm = 0;
         char path[512];
         strncpy(path, inst->pending_path, sizeof(path) - 1); path[sizeof(path) - 1] = 0;
@@ -395,6 +515,14 @@ static void *create_instance(const char *module_dir, const char *json_defaults) 
     if (pthread_create(&inst->analyst, NULL, analyst_thread, inst) == 0) inst->analyst_started = 1;
     if (json_defaults && *json_defaults)
         set_param(inst, "state", json_defaults);        /* restore params; may arm the analyst */
+    if (inst->corpus_file[0] == 0 && inst->analyst_started) {
+        /* Fresh instance with no saved corpus: let the analyst discover a default
+         * (scanning is disk I/O — never do it here, module load blocks SPI). */
+        pthread_mutex_lock(&inst->lock);
+        inst->auto_pick = 1;
+        pthread_cond_signal(&inst->cond);
+        pthread_mutex_unlock(&inst->lock);
+    }
     return inst;
 }
 
@@ -502,6 +630,18 @@ static void set_param(void *instance, const char *key, const char *val) {
         return;
     }
 
+    /* Recipe browser: the host writes the index on each jog detent → LOAD it. */
+    if (strcmp(key, "preset_index") == 0) { apply_recipe(inst, atoi(val)); return; }
+    /* State restore of the LABEL only — never re-applies, or a reload would
+     * clobber the saved (tweaked) values with the recipe's. */
+    if (strcmp(key, "preset_idx") == 0) {
+        int v = atoi(val);
+        if (v < 0) v = 0;
+        if (v >= NRECIPES) v = NRECIPES - 1;
+        inst->preset_idx = v;
+        return;
+    }
+
     /* State deserialize: newline-separated key=value (schema-robust). */
     if (strcmp(key, "state") == 0) {
         const char *p = val;
@@ -531,6 +671,29 @@ static void set_param(void *instance, const char *key, const char *val) {
         }
 }
 
+/* Project slice `idx` onto the normalized 0..1 map plane the scatter uses:
+ * PCA plane 1/2 when learned, else centroid (x) vs loudness (y). */
+static void map_project(const corpus_index_t *ix, int idx, float *px, float *py) {
+    double p1, p2;
+    if (ix->pca_ok) {
+        p1 = 0; p2 = 0;
+        for (int j = 0; j < NDESC; j++) {
+            double dq = ix->qn[idx * NDESC + j] - ix->pca_mean[j];
+            p1 += dq * ix->pca_axis[0][j]; p2 += dq * ix->pca_axis[1][j];
+        }
+        float rx = ix->pca_max[0] - ix->pca_min[0], ry = ix->pca_max[1] - ix->pca_min[1];
+        if (rx <= 0) rx = 1;
+        if (ry <= 0) ry = 1;
+        p1 = (p1 - ix->pca_min[0]) / rx; p2 = (p2 - ix->pca_min[1]) / ry;
+    } else {
+        p1 = ix->qn[idx * NDESC + D_CENTROID_MEAN];
+        p2 = ix->qn[idx * NDESC + D_LOUD_MEAN];
+    }
+    if (p1 < 0) p1 = 0; else if (p1 > 1) p1 = 1;
+    if (p2 < 0) p2 = 0; else if (p2 > 1) p2 = 1;
+    *px = (float)p1; *py = (float)p2;
+}
+
 /* ── get_param ──────────────────────────────────────────────────────────────── */
 
 static int get_param(void *instance, const char *key, char *buf, int buf_len) {
@@ -547,8 +710,19 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
 #define CP_EMIT(...) do { if (n < buf_len) n += snprintf(buf + n, buf_len - n, __VA_ARGS__); } while (0)
         CP_EMIT("[{\"key\":\"corpus_file\",\"name\":\"Source\",\"type\":\"filepath\","
                 "\"root\":\"/data/UserData/UserLibrary\",\"filter\":[\".wav\",\".flac\",\".mp3\"]}");
-        /* Fullscreen canvas view of the corpus map (scatter + query + trail). */
-        CP_EMIT(",{\"key\":\"map_view\",\"name\":\"View\",\"type\":\"canvas\"}");
+        /* Corpus map as a 1.3.0 as_page: a normal knob page carrying a drawer, so
+         * the encoders drive the level's knobs and pads reach the DSP. extra_keys
+         * puts map_live + map_pts in the host's per-frame read rotation → drawPage
+         * gets fresh values with no read on the draw path. */
+        CP_EMIT(",{\"key\":\"map_view\",\"name\":\"View\",\"type\":\"canvas\",\"canvas_script\":\"canvas.js\","
+                "\"as_page\":true,\"preset_browser\":true,\"show_value\":false,\"extra_keys\":[\"map_live\",\"map_pts\"]}");
+        /* Recipe browser triple, named by the View level's list/count/name_param. The
+         * selector (preset_index) is a browser control, never a knob cell. */
+        CP_EMIT(",{\"key\":\"preset_index\",\"name\":\"Recipe\",\"type\":\"int\",\"min\":0,\"max\":%d}", NRECIPES - 1);
+        CP_EMIT(",{\"key\":\"preset_count\",\"name\":\"Recipes\",\"type\":\"int\",\"min\":0,\"max\":%d,\"access\":\"read\"}", NRECIPES);
+        CP_EMIT(",{\"key\":\"preset_name\",\"name\":\"Recipe\",\"type\":\"string\",\"access\":\"read\"}");
+        CP_EMIT(",{\"key\":\"map_live\",\"name\":\"Live\",\"type\":\"string\",\"access\":\"read\"}");
+        CP_EMIT(",{\"key\":\"map_pts\",\"name\":\"Pts\",\"type\":\"string\",\"access\":\"read\"}");
         for (int i = 0; i < NPARAMS; i++) {
             const pdef_t *p = &PARAMS[i];
             CP_EMIT(",{\"key\":\"%s\",\"name\":\"%s\",", p->key, p->label);
@@ -590,40 +764,41 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
         corpus_index_t *ix = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE);
         return snprintf(buf, buf_len, "%s", (ix && ix->scatter_bmp[0]) ? ix->scatter_bmp : "");
     }
-    if (strcmp(key, "map_live") == 0) {   /* x,y,radius as ints (0..127 / 0..63 / 0..127) + last N slice x,y pairs */
+    if (strcmp(key, "map_live") == 0) {   /* normalized 0..1: qx,qy,qr + last N played-slice x,y pairs */
         corpus_index_t *ix = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE);
         if (!ix || ix->nslices <= 0) return snprintf(buf, buf_len, "0,0,0");
         float xp = inst->pv[P_X_POS], yp = inst->pv[P_Y_POS], r = inst->pv[P_RADIUS];
-        int qx = (int)(xp * 127.0f), qy = (int)((1.0f - yp) * 63.0f), qr = (int)(r * 60.0f);
-        int n = snprintf(buf, buf_len, "%d,%d,%d", qx, qy, qr);
-        /* Trail: pixel coords of the last few played slices. Read q->last_sel + ring. */
+        int n = snprintf(buf, buf_len, "%.3f,%.3f,%.3f", (double)xp, (double)yp, (double)r);
+        /* Trail: the last few played slices, projected onto the map plane. The
+         * canvas (as_page drawPage) scales these to its band, so emit 0..1. */
         int rc = ix->query.ring_count, rh = ix->query.ring_head, cap = ix->query.ring_cap;
         for (int t = 0; t < rc && t < 8; t++) {
             int idx = ix->query.ring[(rh - 1 - t + cap * 2) % (cap ? cap : 1)];
             if (idx < 0 || idx >= ix->nslices) continue;
-            /* Project the slice to the same plane as the scatter (PCA if available). */
-            double p1, p2;
-            if (ix->pca_ok) {
-                p1 = 0; p2 = 0;
-                for (int j = 0; j < NDESC; j++) {
-                    double dq = ix->qn[idx * NDESC + j] - ix->pca_mean[j];
-                    p1 += dq * ix->pca_axis[0][j]; p2 += dq * ix->pca_axis[1][j];
-                }
-                float rx = ix->pca_max[0] - ix->pca_min[0], ry = ix->pca_max[1] - ix->pca_min[1];
-                if (rx <= 0) rx = 1;
-                if (ry <= 0) ry = 1;
-                p1 = (p1 - ix->pca_min[0]) / rx; p2 = (p2 - ix->pca_min[1]) / ry;
-            } else { p1 = ix->qn[idx * NDESC + D_CENTROID_MEAN]; p2 = ix->qn[idx * NDESC + D_LOUD_MEAN]; }
-            int tx = (int)(p1 * 127.0), ty = (int)((1.0 - p2) * 63.0);
-            if (tx < 0) tx = 0;
-            if (tx > 127) tx = 127;
-            if (ty < 0) ty = 0;
-            if (ty > 63)  ty = 63;
-            if (n < buf_len - 8) n += snprintf(buf + n, buf_len - n, ",%d,%d", tx, ty);
+            float tx, ty; map_project(ix, idx, &tx, &ty);
+            if (n < buf_len - 16) n += snprintf(buf + n, buf_len - n, ",%.3f,%.3f", (double)tx, (double)ty);
+        }
+        return n;
+    }
+    if (strcmp(key, "map_pts") == 0) {   /* normalized 0..1 scatter, one point per slice (strided to a cap) */
+        corpus_index_t *ix = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE);
+        if (!ix || ix->nslices <= 0) { if (buf_len > 0) buf[0] = 0; return 0; }
+        const int CAP = 360;
+        int step = (ix->nslices + CAP - 1) / CAP;
+        if (step < 1) step = 1;
+        int n = 0;
+        for (int i = 0; i < ix->nslices; i += step) {
+            if (n >= buf_len - 16) break;
+            float px, py; map_project(ix, i, &px, &py);
+            n += snprintf(buf + n, buf_len - n, "%s%.3f,%.3f", n ? ";" : "", (double)px, (double)py);
         }
         return n;
     }
     if (strcmp(key, "map_view") == 0) return snprintf(buf, buf_len, "map");   /* canvas cell needs a value */
+    /* Recipe browser triple (list / count / name) — served every tick while browsing. */
+    if (strcmp(key, "preset_index") == 0) return snprintf(buf, buf_len, "%d", inst->preset_idx);
+    if (strcmp(key, "preset_count") == 0) return snprintf(buf, buf_len, "%d", NRECIPES);
+    if (strcmp(key, "preset_name")  == 0) return snprintf(buf, buf_len, "%s", RECIPES[inst->preset_idx].name);
     if (strcmp(key, "_dbg") == 0) {   /* debug introspection */
         corpus_index_t *ix = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE);
         return snprintf(buf, buf_len, "started=%d arm=%d prog=%d idx=%d nslices=%d pool=%d kclusters=%d pca=%d spb=%d path=[%s]",
@@ -644,6 +819,8 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
         }
         if (inst->corpus_file[0] && n < buf_len)
             n += snprintf(buf + n, buf_len - n, "corpus_file=%s\n", inst->corpus_file);
+        if (n < buf_len)   /* label only: restored via preset_idx, which does not re-apply */
+            n += snprintf(buf + n, buf_len - n, "preset_idx=%d\n", inst->preset_idx);
         return n;
     }
 

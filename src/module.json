@@ -86,8 +86,8 @@
             "repeat_avoid"
           ],
           "params": [
-            { "key": "x_desc", "visible_if": { "param": "map_mode", "not_equals": "Learned" } },
-            { "key": "y_desc", "visible_if": { "param": "map_mode", "not_equals": "Learned" } },
+            "x_desc",
+            "y_desc",
             "x_pos",
             "y_pos",
             "map_mode",
@@ -154,7 +154,7 @@
           ],
           "params": [
             "play_mode",
-            { "key": "note_match", "visible_if": { "param": "play_mode", "equals": "Notes" } },
+            "note_match",
             "pressure",
             "press_amt",
             "vel_amt",
@@ -206,11 +206,29 @@
         "view": {
           "name": "View",
           "knobs": [
-            "map_view"
+            "x_pos",
+            "y_pos",
+            "radius",
+            "density",
+            "grain_size",
+            "k_nearest",
+            "smooth",
+            "cutoff"
           ],
           "params": [
-            "map_view"
-          ]
+            "map_view",
+            "x_pos",
+            "y_pos",
+            "radius",
+            "density",
+            "grain_size",
+            "k_nearest",
+            "smooth",
+            "cutoff"
+          ],
+          "list_param": "preset_index",
+          "count_param": "preset_count",
+          "name_param": "preset_name"
         },
         "mod_set": {
           "name": "Mod & Set",
@@ -223,8 +241,8 @@
           ],
           "params": [
             "follow",
-            { "key": "lfo_rate",  "visible_if": { "param": "follow", "not_equals": "Manual" } },
-            { "key": "lfo_shape", "visible_if": { "param": "follow", "not_equals": "Manual" } },
+            "lfo_rate",
+            "lfo_shape",
             "smooth",
             "src_scope"
           ]
@@ -248,7 +266,47 @@
         "key": "map_view",
         "name": "View",
         "type": "canvas",
-        "show_value": false
+        "canvas_script": "canvas.js",
+        "as_page": true,
+        "show_value": false,
+        "extra_keys": [
+          "map_live",
+          "map_pts"
+        ],
+        "preset_browser": true
+      },
+      {
+        "key": "map_live",
+        "name": "Live",
+        "type": "string",
+        "access": "read"
+      },
+      {
+        "key": "map_pts",
+        "name": "Pts",
+        "type": "string",
+        "access": "read"
+      },
+      {
+        "key": "preset_index",
+        "name": "Recipe",
+        "type": "int",
+        "min": 0,
+        "max": 7
+      },
+      {
+        "key": "preset_count",
+        "name": "Recipes",
+        "type": "int",
+        "min": 0,
+        "max": 8,
+        "access": "read"
+      },
+      {
+        "key": "preset_name",
+        "name": "Recipe",
+        "type": "string",
+        "access": "read"
       },
       {
         "key": "src_scope",
@@ -265,7 +323,7 @@
         "type": "int",
         "min": 16,
         "max": 512,
-        "default": 128,
+        "default": 512,
         "unit": "MB"
       },
       {
@@ -291,7 +349,7 @@
         "type": "float",
         "min": 20,
         "max": 500,
-        "default": 60,
+        "default": 20,
         "step": 5,
         "unit": "ms",
         "display_format": "%.0f"
@@ -302,7 +360,7 @@
         "type": "float",
         "min": 100,
         "max": 2000,
-        "default": 400,
+        "default": 2000,
         "step": 10,
         "unit": "ms",
         "display_format": "%.0f"
@@ -622,7 +680,7 @@
         "type": "float",
         "min": 0,
         "max": 1,
-        "default": 1.0
+        "default": 0.8
       },
       {
         "key": "poly",
@@ -694,7 +752,7 @@
         "type": "float",
         "min": 0,
         "max": 1,
-        "default": 0.5
+        "default": 0.45
       },
       {
         "key": "filt_atk",
