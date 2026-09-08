@@ -1076,7 +1076,12 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
     float g  = fmode ? tanf((float)M_PI * fc / SAMPLE_RATE) : 0.0f;
     float kf = 2.0f - 1.9f * inst->pv[P_RESO];
     float a1 = 1.0f / (1.0f + g * (g + kf)), a2 = g * a1, a3 = g * a2;
-    float drive = 1.0f + sat * 3.0f, makeup = 1.0f / drive;
+    /* Saturation: quadratic drive (transparent at low sat, strong at high) with
+     * makeup referenced to a MID level (~0.5), not the peak. 1/drive makeup only
+     * darkened the sound; this keeps mid-level loudness ~constant while pushing
+     * quiet grains audibly into the tanh and gritting up the peaks. */
+    float drive = 1.0f + sat * sat * 7.0f;                    /* sat 0..1 → drive 1..8 */
+    float makeup = 0.5f / (tanhf(0.5f * drive) + 1e-6f);
     float dry = dry_in ? inst->pv[P_DRY_MIX] : 0.0f;   /* Dry Mix: blend live input (Mosaic) */
     for (int i = 0; i < frames; i++) {
         for (int ch = 0; ch < 2; ch++) {
