@@ -25,5 +25,5 @@ echo "Built: dist/$MODULE_ID-module.tar.gz"
 
 # GLIBC sanity: max symbol must be <= 2.29 (Move ships 2.29).
 echo "GLIBC symbols used:"
-docker run --rm -v "$ROOT:/build" schwung-concat-builder \
+MSYS_NO_PATHCONV=1 docker run --rm -v "$ROOT:/build" schwung-concat-builder \
   bash -c 'aarch64-linux-gnu-strings /build/dist/concat/dsp.so | grep GLIBC_ | sort -uV || true'
