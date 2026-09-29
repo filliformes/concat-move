@@ -102,13 +102,28 @@ static void spawn_grain(grain_engine_t *ge, corpus_index_t *ix,
     g->audio = &ix->pool[sl->pool_off];
     g->len   = sl->len;
 
+    /* #1 Per-grain loudness normalisation. Corpus slices come from unrelated files,
+     * so their levels vary wildly and loud slices jump out. Recover this slice's raw
+     * RMS-mean by inverting the RobustScaling (qn = (raw-median)/iqr), then pull its
+     * gain toward the corpus median by `level_norm`. Clamped so near-silent slices
+     * can't explode. */
+    float gnorm = 1.0f;
+    if (gp->level_norm > 0.0f) {
+        float ref = ix->median[D_LOUD_MEAN];                 /* corpus median loudness */
+        float raw = ix->qn[sel * NDESC + D_LOUD_MEAN] * ix->iqr[D_LOUD_MEAN] + ref;
+        if (raw < 1e-6f) raw = 1e-6f;
+        float factor = ref / raw;
+        if (factor < 0.25f) factor = 0.25f; else if (factor > 4.0f) factor = 4.0f;
+        gnorm = 1.0f + gp->level_norm * (factor - 1.0f);     /* lerp 1 → factor */
+    }
+
     float gms = gp->grain_size_ms;                        /* random size spread per grain */
     if (gp->grain_rand > 0.0f) gms *= 1.0f + (g_rand(ge) * 2.0f - 1.0f) * gp->grain_rand;
     int glen = (int)(gms * 0.001f * sr);                 /* may exceed the slice — slice loops under the window */
     if (glen < 1) glen = 1;
     g->grain_len = glen;
     g->age  = 0;
-    g->gain = gain;
+    g->gain = gain * gnorm;
     g->amp    = amp ? amp->level : NULL;
     g->ampgen = amp ? amp->gen   : NULL;
     g->gen    = amp ? amp->gen_val : 0;
@@ -131,7 +146,16 @@ static void spawn_grain(grain_engine_t *ge, corpus_index_t *ix,
     if (g->rate > 32.0f) g->rate = 32.0f;   /* cap at +5 oct: bounds the read step + wrap cost */
 
     g->reverse = (g_rand(ge) < gp->reverse_prob) ? 1 : 0;
-    g->pos = g->reverse ? (double)(period - 1) : 0.0;
+    /* #2 Per-grain random read-offset within the slice: de-correlates repeated or
+     * overlapping copies of the same slice (kills comb-filtering) and removes
+     * mechanical repetition. Offset the loop-read start, wrapped into [0, period). */
+    double start = g->reverse ? (double)(period - 1) : 0.0;
+    if (gp->pos_jitter > 0.0f && period > 1) {
+        start += (double)(g_rand(ge) * gp->pos_jitter) * (double)period;
+        start = fmod(start, (double)period);
+        if (start < 0.0) start += (double)period;
+    }
+    g->pos = start;
 
     float pan = (g_rand(ge) * 2.0f - 1.0f) * gp->pan_spread;   /* -spread..spread */
     g->panl = 0.5f * (1.0f - pan);
@@ -178,8 +202,11 @@ void grain_mix(grain_engine_t *ge, const grain_params_t *gp, int16_t *out_lr, in
                 float tfrac = (float)(tp - floor(tp));
                 float tail = g->audio[it] * (1.0f / 32768.0f)
                            + tfrac * (g->audio[it1] - g->audio[it]) * (1.0f / 32768.0f);
-                float wgt = (float)(p / xf);  /* 0 → tail, 1 → head */
-                samp = tail * (1.0f - wgt) + samp * wgt;
+                /* #3 Equal-power (sin/cos) seam crossfade: a linear blend dips ~-3 dB
+                 * mid-seam for the uncorrelated head/tail of a loop; equal-power holds
+                 * the level (per Schwarz et al., DAFx-16). */
+                float a = (float)(p / xf) * 1.5707963f;   /* 0 → π/2 */
+                samp = tail * cosf(a) + samp * sinf(a);
             }
 
             float env = grain_env_val(gp->grain_env, g->age, g->grain_len);

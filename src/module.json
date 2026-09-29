@@ -169,7 +169,8 @@
             "sat",
             "dry_mix",
             "volume",
-            "width"
+            "width",
+            "level_norm"
           ],
           "params": [
             "cutoff",
@@ -177,7 +178,8 @@
             "sat",
             "dry_mix",
             "volume",
-            "width"
+            "width",
+            "level_norm"
           ]
         },
         "corpus": {
@@ -237,6 +239,7 @@
             "lfo_rate",
             "lfo_shape",
             "smooth",
+            "pos_jitter",
             "src_scope"
           ],
           "params": [
@@ -244,6 +247,7 @@
             "lfo_rate",
             "lfo_shape",
             "smooth",
+            "pos_jitter",
             "src_scope"
           ]
         }
@@ -777,6 +781,24 @@
         "min": 0,
         "max": 1,
         "default": 0
+      },
+      {
+        "key": "level_norm",
+        "name": "Level Norm",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0.5,
+        "step": 0.01
+      },
+      {
+        "key": "pos_jitter",
+        "name": "Pos Jitter",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "default": 0.15,
+        "step": 0.01
       }
     ]
   }

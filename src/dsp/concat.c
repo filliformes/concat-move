@@ -82,6 +82,8 @@ enum {
     P_PRESSURE, P_PRESS_AMT, P_VEL_AMT, P_POLY,
     /* Shape — amp + filter envelopes */
     P_AMP_ATK, P_AMP_DEC, P_AMP_SUS, P_AMP_REL, P_FILT_AMT, P_FILT_ATK, P_FILT_DEC, P_FILT_SUS,
+    /* Leveling + grain variation (appended: keeps earlier indices stable) */
+    P_LEVEL_NORM, P_POS_JITTER,
     NPARAMS
 };
 
@@ -169,6 +171,9 @@ static const pdef_t PARAMS[NPARAMS] = {
     [P_FILT_ATK]      = {"filt_atk",     "Filter Attack",T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.01f},
     [P_FILT_DEC]      = {"filt_dec",     "Filter Decay", T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.3f},
     [P_FILT_SUS]      = {"filt_sus",     "Filter Sustain",T_FLOAT, 0,   1, 0.01f, NULL, 0, 0},
+    /* Leveling + grain variation */
+    [P_LEVEL_NORM]    = {"level_norm",   "Level Norm",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.5f},   /* even out slice levels */
+    [P_POS_JITTER]    = {"pos_jitter",   "Pos Jitter",   T_FLOAT,  0,   1, 0.01f, NULL, 0, 0.15f},  /* per-grain read offset */
 };
 
 /* ui_hierarchy = the knob grid. Root is the landing page (Corpus/setup) with the
@@ -188,12 +193,12 @@ static const char UI_HIERARCHY[] =
  * View deliberately keeps two pages: "View" (grid) then "View - 2" (the map). */
 "\"view\":{\"name\":\"View\",\"list_param\":\"preset_index\",\"count_param\":\"preset_count\",\"name_param\":\"preset_name\",\"knobs\":[\"x_pos\",\"y_pos\",\"radius\",\"density\",\"grain_size\",\"k_nearest\",\"smooth\",\"cutoff\"],\"params\":[\"map_view\",\"x_pos\",\"y_pos\",\"radius\",\"density\",\"grain_size\",\"k_nearest\",\"smooth\",\"cutoff\"]},"
 "\"corpus\":{\"name\":\"Corpus\",\"knobs\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"],\"params\":[\"corpus_file\",\"pool_mb\",\"rescan\",\"slice_mode\",\"min_slice_ms\",\"max_slice_ms\",\"analyze\",\"silence_gate\"]},"
-"\"mod_set\":{\"name\":\"Mod & Set\",\"knobs\":[\"follow\",\"lfo_rate\",\"lfo_shape\",\"smooth\",\"src_scope\"],\"params\":[\"follow\",\"lfo_rate\",\"lfo_shape\",\"smooth\",\"src_scope\"]},"
+"\"mod_set\":{\"name\":\"Mod & Set\",\"knobs\":[\"follow\",\"lfo_rate\",\"lfo_shape\",\"smooth\",\"pos_jitter\",\"src_scope\"],\"params\":[\"follow\",\"lfo_rate\",\"lfo_shape\",\"smooth\",\"pos_jitter\",\"src_scope\"]},"
 "\"map\":{\"name\":\"Map\",\"knobs\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"map_mode\",\"radius\",\"k_nearest\",\"repeat_avoid\"],\"params\":[\"x_desc\",\"y_desc\",\"x_pos\",\"y_pos\",\"map_mode\",\"radius\",\"k_nearest\",\"repeat_avoid\"]},"
 "\"grain\":{\"name\":\"Grain\",\"knobs\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pan_spread\",\"grain_rand\",\"reverse\",\"pitch_jitter\"],\"params\":[\"density\",\"grain_size\",\"grain_env\",\"pitch\",\"pan_spread\",\"grain_rand\",\"reverse\",\"pitch_jitter\"]},"
 "\"shape\":{\"name\":\"Shape\",\"knobs\":[\"amp_atk\",\"amp_dec\",\"amp_sus\",\"amp_rel\",\"filt_amt\",\"filt_atk\",\"filt_dec\",\"filt_sus\"],\"params\":[\"amp_atk\",\"amp_dec\",\"amp_sus\",\"amp_rel\",\"filt_amt\",\"filt_atk\",\"filt_dec\",\"filt_sus\"]},"
 "\"play\":{\"name\":\"Play\",\"knobs\":[\"play_mode\",\"note_match\",\"pressure\",\"press_amt\",\"vel_amt\",\"poly\"],\"params\":[\"play_mode\",\"note_match\",\"pressure\",\"press_amt\",\"vel_amt\",\"poly\"]},"
-"\"out\":{\"name\":\"Out\",\"knobs\":[\"cutoff\",\"resonance\",\"sat\",\"dry_mix\",\"volume\",\"width\"],\"params\":[\"cutoff\",\"resonance\",\"sat\",\"dry_mix\",\"volume\",\"width\"]}"
+"\"out\":{\"name\":\"Out\",\"knobs\":[\"cutoff\",\"resonance\",\"sat\",\"dry_mix\",\"volume\",\"width\",\"level_norm\"],\"params\":[\"cutoff\",\"resonance\",\"sat\",\"dry_mix\",\"volume\",\"width\",\"level_norm\"]}"
 "}}";
 
 /* ── Instance state ─────────────────────────────────────────────────────────── */
@@ -930,6 +935,8 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
     gp.k_nearest    = (int)inst->pv[P_K_NEAREST];
     gp.radius       = inst->pv[P_RADIUS];
     gp.smooth       = inst->pv[P_SMOOTH];
+    gp.level_norm   = inst->pv[P_LEVEL_NORM];
+    gp.pos_jitter   = inst->pv[P_POS_JITTER];
     gp.density      = inst->pv[P_DENSITY];
     gp.grain_size_ms = inst->pv[P_GRAIN_SIZE];
     gp.grain_env    = (int)inst->pv[P_GRAIN_ENV];
