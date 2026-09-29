@@ -1,0 +1,11 @@
+api_version=2 get_error=NULL
+PERF folder=/data/UserData/UserLibrary/Samples/MELLOTRON analyze=100 after 0.8s, new corpus LIVE after 0.8s  started=1 arm=0 prog=100 idx=1 nslices=24991 pool=111259668 kclusters=16 pca=1 spb=22050 path=[/data/UserData/UserLibrary/Samples/MELLOTRON]
+    cpu-time/block: avg=  965 p99=14043 max= 15357 us  over-budget=45/790
+[PERF Raw 8-note chord         ] blk=  790 render avg= 1297 p99=19991 max= 23266 us over=45 | peak=  -6.5 rms= -20.8 dBFS clips=0 clicks?=0 silent=17 dc=+0.0000
+    cpu-time/block: avg= 6280 p99=27002 max= 29660 us  over-budget=239/790
+[PERF Raw 16-pad chord d100    ] blk=  790 render avg= 8363 p99=39546 max= 43883 us over=241 | peak=  -6.3 rms= -21.1 dBFS clips=0 clicks?=0 silent=0 dc=-0.0000
+    cpu-time/block: avg=  983 p99=14046 max= 14881 us  over-budget=49/790
+[PERF Learned 8-note chord     ] blk=  790 render avg= 1246 p99=19358 max= 22030 us over=49 | peak=  -5.2 rms= -19.4 dBFS clips=0 clicks?=0 silent=0 dc=-0.0001
+    cpu-time/block: avg= 6257 p99=26426 max= 30632 us  over-budget=239/790
+[PERF Learned 16-pad chord d100] blk=  790 render avg= 8352 p99=39450 max= 44236 us over=241 | peak=  -5.5 rms= -18.8 dBFS clips=0 clicks?=0 silent=0 dc=+0.0009
+DONE
