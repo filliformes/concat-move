@@ -89,6 +89,10 @@ async function listDir(path) {
     if (name.startsWith('.')) continue;
     out.push({ path: tr.getAttribute('data-path'), name, dir: tr.getAttribute('data-isdir') === 'true' });
   }
+  /* A path that does not exist gets the root listing back: refuse rows from elsewhere. */
+  const here = out.filter((r) => dirName(r.path) === path);
+  if (out.length && !here.length) throw new Error(`${baseName(path)}: not found on the Move`);
+  out.length = 0; out.push(...here);
   out.sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
   return out;
 }
@@ -174,6 +178,7 @@ const S = {
   slicing: { ...DEFAULT_SLICING },
   use: new Set(GROUPS.map((g) => g.id)),
   sel: null,            /* selected source id */
+  selFile: null,        /* a file inside the selected folder source, or null */
   dirty: false,
   loadedName: null,     /* file name it was opened from / saved as */
 };
@@ -223,20 +228,34 @@ async function expandFolder(path, recurse, depth = 0, out = []) {
   return out;
 }
 
-async function addSource(path, isDir, at) {
-  if (S.sources.some((s) => s.path === path)) { setStatus(`${baseName(path)} is already in the corpus`); return; }
-  const s = { id: nextId++, kind: isDir ? 'folder' : 'file', path, start: 0, end: 0, recurse: true, include: [], exclude: [], files: [], missing: false };
-  if (at === undefined) S.sources.push(s); else S.sources.splice(at, 0, s);
-  S.sel = s.id;
-  markDirty();
-  if (isDir) { setStatus(`Listing ${baseName(path)}…`); s.files = await expandFolder(path, s.recurse); setStatus(''); }
+/* Add library entries ({path, dir}) as sources, in order. Folders arrive collapsed. */
+async function addSources(list) {
+  const fresh = list.filter((x, i) => !S.sources.some((s) => s.path === x.path) && list.findIndex((y) => y.path === x.path) === i);
+  if (!fresh.length) {
+    setStatus(list.length === 1 ? `${baseName(list[0].path)} is already in the corpus` : 'Those are already in the corpus');
+    return;
+  }
+  const added = fresh.map((x) => ({ id: nextId++, kind: x.dir ? 'folder' : 'file', path: x.path, start: 0, end: 0, recurse: true,
+                                    include: [], exclude: [], files: [], missing: false, open: false }));
+  S.sources.push(...added);
+  S.sel = added[added.length - 1].id; S.selFile = null;
+  markDirty(); renderSources(); renderEditor();
+  for (const s of added.filter((x) => x.kind === 'folder')) {
+    setStatus(`Listing ${baseName(s.path)}…`);
+    s.files = await expandFolder(s.path, true);
+  }
+  setStatus(added.length > 1 ? `Added ${added.length} sources` : '');
   renderSources(); renderEditor(); scheduleAnalysis();
 }
+const addSource = (path, dir) => addSources([{ path, dir }]);
 
 /* ── library panel ─────────────────────────────────────────────────────────── */
-let libPath = LIB;
+/* Click selects a sample (Ctrl/Cmd toggles, Shift extends), Ctrl+A selects every sample
+ * here; dragging any selected row drags them all. Clicking a folder opens it. */
+let libPath = LIB, libRows = [], libSel = new Set(), libAnchor = -1;
 async function showLib(path) {
   libPath = path;
+  libSel = new Set(); libAnchor = -1;
   const crumbs = $('crumbs'); crumbs.textContent = '';
   const rel = path === LIB ? [] : path.slice(LIB.length + 1).split('/');
   const parts = [['UserLibrary', LIB]];
@@ -245,26 +264,64 @@ async function showLib(path) {
   $('btnUp').disabled = path === LIB;
   const lib = $('lib');
   lib.textContent = 'Loading…';
+  paintLibSel();
   let rows;
   try { rows = await listDir(path); } catch (e) { lib.textContent = String(e.message); return; }
+  if (path !== libPath) return;                        /* a newer navigation won */
   lib.textContent = '';
-  const shown = rows.filter((r) => r.dir || AUDIO_RE.test(r.name));
-  if (!shown.length) lib.append(el('div', { class: 'lib-row muted' }, 'No folders or audio here'));
-  for (const r of shown) {
-    const row = el('div', { class: 'lib-row' + (r.dir ? ' dir' : ''), draggable: 'true', title: r.path },
+  libRows = rows.filter((r) => r.dir || AUDIO_RE.test(r.name));
+  if (!libRows.length) lib.append(el('div', { class: 'lib-row muted' }, 'No folders or audio here'));
+  libRows.forEach((r, i) => {
+    const row = el('div', { class: 'lib-row' + (r.dir ? ' dir' : ''), draggable: 'true', title: r.path, 'data-i': i },
       el('span', { class: 'ic' }, r.dir ? '▸' : '♪'),
       el('span', { class: 'nm' }, r.name),
-      r.dir ? null : el('button', { title: 'Listen', onclick: (e) => { e.stopPropagation(); playFile(r.path); } }, '▶'),
+      r.dir ? null : playBtn(r.path, 0, 0),
       el('button', { title: 'Add to corpus', onclick: (e) => { e.stopPropagation(); addSource(r.path, r.dir); } }, '+'));
-    row.addEventListener('dblclick', () => (r.dir ? showLib(r.path) : addSource(r.path, false)));
-    if (r.dir) row.addEventListener('click', () => showLib(r.path));
+    row.addEventListener('click', (e) => libClick(e, i));
+    row.addEventListener('dblclick', () => { if (!r.dir) addSource(r.path, false); });
     row.addEventListener('dragstart', (e) => {
-      e.dataTransfer.setData('application/x-concat', JSON.stringify({ path: r.path, dir: r.dir }));
-      e.dataTransfer.setData('text/plain', r.path);
+      if (!libSel.has(r.path)) { libSel = new Set([r.path]); libAnchor = i; paintLibSel(); }
+      const list = libRows.filter((x) => libSel.has(x.path)).map((x) => ({ path: x.path, dir: x.dir }));
+      e.dataTransfer.setData('application/x-concat', JSON.stringify({ items: list }));
+      e.dataTransfer.setData('text/plain', list.map((x) => x.path).join('\n'));
       e.dataTransfer.effectAllowed = 'copy';
     });
     lib.append(row);
+  });
+}
+function libClick(e, i) {
+  const r = libRows[i];
+  if (e.ctrlKey || e.metaKey) { if (libSel.has(r.path)) libSel.delete(r.path); else libSel.add(r.path); libAnchor = i; }
+  else if (e.shiftKey && libAnchor >= 0) {
+    const [a, b] = libAnchor < i ? [libAnchor, i] : [i, libAnchor];
+    libSel = new Set(libRows.slice(a, b + 1).map((x) => x.path));
   }
+  else if (r.dir) { showLib(r.path); return; }
+  else { libSel = new Set([r.path]); libAnchor = i; }
+  paintLibSel();
+}
+function libSelected() { return libRows.filter((x) => libSel.has(x.path)).map((x) => ({ path: x.path, dir: x.dir })); }
+function paintLibSel() {
+  for (const row of $('lib').querySelectorAll('.lib-row[data-i]')) row.classList.toggle('sel', libSel.has(libRows[+row.dataset.i].path));
+  const n = libSel.size, b = $('btnAddSel');
+  b.hidden = n < 2;
+  b.textContent = `Add ${n}`;
+}
+function selectAllLib() {
+  const files = libRows.filter((r) => !r.dir);
+  libSel = new Set((files.length ? files : libRows).map((r) => r.path));
+  libAnchor = libSel.size ? 0 : -1;
+  paintLibSel();
+  if (libSel.size) setStatus(`${libSel.size} selected: drag them onto the corpus, or press Add ${libSel.size}`);
+}
+/* ↑/↓ in the library: move through the samples and play each one. */
+function libMove(d) {
+  if (!libRows.length) return;
+  let i = libAnchor < 0 ? (d > 0 ? 0 : libRows.length - 1) : Math.max(0, Math.min(libRows.length - 1, libAnchor + d));
+  libAnchor = i; libSel = new Set([libRows[i].path]); paintLibSel();
+  const row = $('lib').querySelector(`.lib-row[data-i="${i}"]`);
+  if (row) row.scrollIntoView({ block: 'nearest' });
+  if (!libRows[i].dir) playFile(libRows[i].path);
 }
 
 /* ── corpus list ──────────────────────────────────────────────────────────── */
@@ -272,54 +329,120 @@ function srcSummary(s, si) {
   if (s.missing) return 'missing on the Move';
   const st = srcStats[si];
   if (s.kind === 'folder') {
-    const n = items().filter((it) => it.src === si).length;
-    return `folder · ${n} file${n === 1 ? '' : 's'}${st ? ` · ${st.slices} slices` : ''}`;
+    const n = items().filter((it) => it.src === si).length, all = (s.files || []).length;
+    return `folder · ${n === all ? `${n} file${n === 1 ? '' : 's'}` : `${n} of ${all} files`}${st ? ` · ${st.slices} slices` : ''}`;
   }
   const m = peaksMem.get(peakKey(s.path));
   const dur = m ? m.frames / SR : NaN;
   const range = s.end > s.start ? `${fmtTime(s.start)} – ${fmtTime(s.end)}` : (s.start > 0 ? `from ${fmtTime(s.start)}` : 'whole file');
-  const dup = S.sources.find((o) => o.kind === 'folder' && !o.missing && o !== s && (o.files || []).includes(s.path));
+  const dup = S.sources.find((o) => o.kind === 'folder' && !o.missing && o !== s && (o.files || []).includes(s.path) &&
+                                    items().some((it) => it.path === s.path && S.sources[it.src] === o));
   return `${range}${isFinite(dur) ? ` of ${fmtTime(dur)}` : ''}${st ? ` · ${st.slices} slices` : ''}` +
-         (dup ? ` · also in ${baseName(dup.path)} (counted twice: Skip it there)` : '');
+         (dup ? ` · also in ${baseName(dup.path)} (counted twice: ✕ it there)` : '');
 }
 let srcStats = [];
+/* A file name as an exact fnmatch pattern (brackets escape the wildcards). */
+const globEscape = (name) => name.replace(/[[\]*?]/g, '[$&]');
+function usedIn(s) { const si = S.sources.indexOf(s); return new Set(items().filter((it) => it.src === si).map((it) => it.path)); }
+
 function renderSources() {
   const box = $('sources');
   box.querySelectorAll('.src').forEach((n) => n.remove());
   $('drop').style.display = S.sources.length ? 'none' : '';
   $('srcCount').textContent = S.sources.length ? `${S.sources.length} source${S.sources.length === 1 ? '' : 's'}` : '';
   S.sources.forEach((s, si) => {
-    const row = el('div', { class: 'src' + (S.sel === s.id ? ' sel' : '') + (s.missing ? ' missing' : ''), title: s.path },
+    const isFolder = s.kind === 'folder' && !s.missing;
+    const tog = isFolder ? el('button', { class: 'tog', title: s.open ? 'Hide the files' : 'Show the files',
+      onclick: (e) => { e.stopPropagation(); s.open = !s.open; renderSources(); } }, s.open ? '▾' : '▸') : null;
+    const row = el('div', { class: 'src' + (S.sel === s.id && !S.selFile ? ' sel' : '') + (s.missing ? ' missing' : ''), title: s.path },
       el('span', { class: 'chip', style: `background:${colourOf(si)}` }),
-      el('div', { class: 't' }, el('div', {}, (s.kind === 'folder' ? '▸ ' : '') + baseName(s.path)), el('div', { class: 'sub' }, srcSummary(s, si))),
+      el('div', { class: 't' }, el('div', {}, tog, baseName(s.path)), el('div', { class: 'sub' }, srcSummary(s, si))),
       el('div', { class: 'acts' },
-        s.kind === 'file' && !s.missing ? el('button', { class: 'icon', title: 'Listen to the used range', onclick: (e) => { e.stopPropagation(); playFile(s.path, s.start, s.end); } }, '▶') : null,
+        s.kind === 'file' && !s.missing ? playBtn(s.path, s.start, s.end) : null,
         el('button', { class: 'icon', title: 'Remove from the corpus (the file stays on the Move)', onclick: (e) => { e.stopPropagation(); removeSource(s.id); } }, '✕')));
-    row.addEventListener('click', () => { S.sel = s.id; renderSources(); renderEditor(); });
+    row.addEventListener('click', () => { S.sel = s.id; S.selFile = null; renderSources(); renderEditor(); });
+    row.addEventListener('dblclick', () => { if (isFolder) { s.open = !s.open; renderSources(); } });
     box.append(row);
+    if (!isFolder || !s.open) return;
+    const used = usedIn(s), base = relPath(s.path);
+    for (const f of s.files || []) {
+      const on = used.has(f), bn = baseName(f), mine = (s.exclude || []).includes(globEscape(bn));
+      const child = el('div', { class: 'src child' + (S.sel === s.id && S.selFile === f ? ' sel' : '') + (on ? '' : ' off'), title: f },
+        el('span'),
+        el('div', { class: 't' }, el('div', {}, relPath(f).slice(base.length + 1) || bn)),
+        el('div', { class: 'acts' },
+          playBtn(f, 0, 0),
+          on ? el('button', { class: 'icon', title: 'Leave this file out of the corpus', onclick: (e) => { e.stopPropagation(); skipFile(s, f); } }, '✕')
+             : el('button', { class: 'icon', title: mine ? 'Put this file back' : 'Left out by a pattern: edit Only / Skip below', disabled: !mine,
+                              onclick: (e) => { e.stopPropagation(); unskipFile(s, f); } }, '+')));
+      child.addEventListener('click', () => { S.sel = s.id; S.selFile = f; renderSources(); renderEditor(); });
+      box.append(child);
+    }
+    if (!(s.files || []).length) box.append(el('div', { class: 'src child off' }, el('span'), el('div', { class: 't muted' }, 'No audio files'), el('span')));
   });
+  const sel = box.querySelector('.src.sel');
+  if (sel) sel.scrollIntoView({ block: 'nearest' });
+}
+function skipFile(s, f) {
+  s.exclude = [...(s.exclude || []), globEscape(baseName(f))];
+  markDirty(); renderSources(); renderEditor(); scheduleAnalysis();
+}
+function unskipFile(s, f) {
+  const g = globEscape(baseName(f));
+  s.exclude = (s.exclude || []).filter((x) => x !== g);
+  if (!usedIn(s).has(f)) setStatus(`${baseName(f)} is still left out by a pattern (Only / Skip)`);
+  markDirty(); renderSources(); renderEditor(); scheduleAnalysis();
 }
 function removeSource(id) {
   S.sources = S.sources.filter((s) => s.id !== id);
-  if (S.sel === id) S.sel = null;
+  if (S.sel === id) { S.sel = null; S.selFile = null; }
   markDirty(); renderSources(); renderEditor(); scheduleAnalysis();
 }
 function bindDrop() {
-  const box = $('sources');
-  box.addEventListener('dragover', (e) => { if (e.dataTransfer.types.includes('application/x-concat')) { e.preventDefault(); box.classList.add('over'); } });
-  box.addEventListener('dragleave', (e) => { if (e.target === box) box.classList.remove('over'); });
-  box.addEventListener('drop', (e) => {
+  /* The whole corpus column takes drops, not just the list. */
+  const col = $('corpusCol'), box = $('sources');
+  col.addEventListener('dragover', (e) => { if (e.dataTransfer.types.includes('application/x-concat')) { e.preventDefault(); box.classList.add('over'); } });
+  col.addEventListener('dragleave', (e) => { if (!col.contains(e.relatedTarget)) box.classList.remove('over'); });
+  col.addEventListener('drop', (e) => {
     box.classList.remove('over');
     const d = e.dataTransfer.getData('application/x-concat');
     if (!d) return;
     e.preventDefault();
-    const { path, dir } = JSON.parse(d);
-    addSource(path, dir);
+    const p = JSON.parse(d);
+    addSources(p.items || [{ path: p.path, dir: p.dir }]);
   });
 }
 
-/* ── editor (selected source) ─────────────────────────────────────────────── */
-let wave = null;   /* {canvas, s, frames, peaks, drag} */
+/* ↑/↓ in the corpus list: step through sources and the files of open folders,
+ * playing each sample; → opens a folder, ← closes it (or goes back to it). */
+function navRows() {
+  const out = [];
+  for (const s of S.sources) {
+    out.push({ s, f: null });
+    if (s.kind === 'folder' && s.open && !s.missing) for (const f of s.files || []) out.push({ s, f });
+  }
+  return out;
+}
+function navMove(d) {
+  const rows = navRows();
+  if (!rows.length) return;
+  const at = rows.findIndex((r) => r.s.id === S.sel && r.f === (S.selFile || null));
+  const r = rows[at < 0 ? (d > 0 ? 0 : rows.length - 1) : Math.max(0, Math.min(rows.length - 1, at + d))];
+  S.sel = r.s.id; S.selFile = r.f;
+  renderSources(); renderEditor();
+  if (r.f) playFile(r.f);
+  else if (r.s.kind === 'file' && !r.s.missing) playFile(r.s.path, r.s.start, r.s.end);
+}
+function navOpen(open) {
+  const s = selected();
+  if (!s || s.kind !== 'folder') return;
+  if (!open && S.selFile) S.selFile = null;
+  else s.open = open;
+  renderSources(); renderEditor();
+}
+
+/* ── editor (selected source, or a file inside a folder source) ───────────── */
+let wave = null;   /* {canvas, s, frames, peaks, inputs, preview} */
 function selected() { return S.sources.find((s) => s.id === S.sel) || null; }
 function renderEditor() {
   const ed = $('editor');
@@ -328,16 +451,25 @@ function renderEditor() {
   wave = null;
   if (!s) { ed.classList.remove('on'); return; }
   ed.classList.add('on');
+  if (S.selFile && s.kind === 'folder') { renderMemberEditor(ed, s, S.selFile); return; }
   ed.append(el('div', { class: 'mono muted', title: s.path }, relPath(s.path)));
   if (s.missing) { ed.append(el('div', { class: 'row' }, 'This source is not on the Move any more. Remove it, or put the file back.')); return; }
   if (s.kind === 'file') renderFileEditor(ed, s); else renderFolderEditor(ed, s);
 }
 
-function renderFileEditor(ed, s) {
+function attachWave(ed, src, inputs) {
   const cv = el('canvas', { id: 'wave' });
   ed.append(el('div', { class: 'row' }, cv));
+  wave = { canvas: cv, s: src, frames: 0, peaks: null, inputs, preview: !!src.preview };
+  loadPeaks(src.path).then((pk) => { if (wave && wave.s === src && pk) { wave.frames = pk.frames; wave.peaks = pk.peaks; drawWave(); renderSources(); } });
+  bindWave(cv, src);
+  new ResizeObserver(() => drawWave()).observe(cv);
+}
+
+function renderFileEditor(ed, s) {
   const startIn = el('input', { type: 'number', min: 0, step: 0.01, value: (s.start || 0).toFixed(2) });
-  const endIn = el('input', { type: 'number', min: 0, step: 0.01, value: s.end > s.start ? s.end.toFixed(2) : '' , placeholder: 'end' });
+  const endIn = el('input', { type: 'number', min: 0, step: 0.01, value: s.end > s.start ? s.end.toFixed(2) : '', placeholder: 'end' });
+  attachWave(ed, s, [startIn, endIn]);
   const apply = () => {
     const a = Math.max(0, +startIn.value || 0), b = +endIn.value || 0;
     s.start = a; s.end = b > a ? b : 0;
@@ -345,16 +477,37 @@ function renderFileEditor(ed, s) {
   };
   startIn.addEventListener('change', apply); endIn.addEventListener('change', apply);
   ed.append(el('div', { class: 'row' },
-    el('button', { onclick: () => playFile(s.path, s.start, s.end) }, '▶ Play range'),
+    playBtn(s.path, s.start, s.end, { cls: '', label: 'Play range' }),
     el('button', { onclick: stopAudio }, '■ Stop'),
     el('label', { class: 'muted' }, 'Start ', startIn, ' s'),
     el('label', { class: 'muted' }, 'End ', endIn, ' s'),
     el('button', { onclick: () => { s.start = 0; s.end = 0; startIn.value = '0.00'; endIn.value = ''; markDirty(); drawWave(); renderSources(); scheduleAnalysis(); } }, 'Whole file'),
     el('span', { class: 'muted' }, 'Drag on the waveform to choose the part that enters the corpus.')));
-  wave = { canvas: cv, s, frames: 0, peaks: null, inputs: [startIn, endIn] };
-  loadPeaks(s.path).then((pk) => { if (wave && wave.s === s && pk) { wave.frames = pk.frames; wave.peaks = pk.peaks; drawWave(); renderSources(); } });
-  bindWave(cv, s);
-  new ResizeObserver(() => drawWave()).observe(cv);
+}
+
+/* A file inside a folder source: hear it, skip it, or pull it out to trim it. */
+function renderMemberEditor(ed, s, f) {
+  const on = usedIn(s).has(f);
+  ed.append(el('div', { class: 'mono muted', title: f }, relPath(f)));
+  attachWave(ed, { path: f, start: 0, end: 0, preview: true }, null);
+  ed.append(el('div', { class: 'row' },
+    playBtn(f, 0, 0, { cls: '', label: 'Play' }),
+    el('button', { onclick: stopAudio }, '■ Stop'),
+    on ? el('button', { onclick: () => skipFile(s, f) }, '✕ Leave out')
+       : el('button', { onclick: () => unskipFile(s, f) }, '+ Put back'),
+    el('button', { title: 'Adds this sample as its own source (so you can trim it) and leaves it out of the folder',
+                   onclick: () => trimOnItsOwn(s, f) }, 'Trim on its own'),
+    el('span', { class: 'muted' }, `In ${baseName(s.path)}. Click the waveform to play from there; ↑/↓ steps through the files.`)));
+}
+function trimOnItsOwn(s, f) {
+  if (usedIn(s).has(f)) s.exclude = [...(s.exclude || []), globEscape(baseName(f))];
+  let own = S.sources.find((o) => o.kind === 'file' && o.path === f);
+  if (!own) {
+    own = { id: nextId++, kind: 'file', path: f, start: 0, end: 0, recurse: true, include: [], exclude: [], files: [], missing: false, open: false };
+    S.sources.splice(S.sources.indexOf(s) + 1, 0, own);
+  }
+  S.sel = own.id; S.selFile = null;
+  markDirty(); renderSources(); renderEditor(); scheduleAnalysis();
 }
 
 function bindWave(cv, s) {
@@ -362,6 +515,10 @@ function bindWave(cv, s) {
     const r = cv.getBoundingClientRect();
     return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * (wave.frames / SR);
   };
+  if (s.preview) {                                     /* folder member: click plays from there */
+    cv.addEventListener('pointerdown', (e) => { if (wave && wave.frames) playFile(s.path, toSec(e), 0); });
+    return;
+  }
   let drag = null;
   cv.addEventListener('pointerdown', (e) => {
     if (!wave || !wave.frames) return;
@@ -410,13 +567,13 @@ function drawWave() {
   const s = wave.s, dur = wave.frames / SR;
   const a = s.start || 0, b = s.end > s.start ? s.end : dur;
   const xa = (a / dur) * W, xb = (b / dur) * W;
-  g.fillStyle = cSel; g.globalAlpha = 0.12; g.fillRect(xa, 0, xb - xa, H); g.globalAlpha = 1;
+  if (!wave.preview) { g.fillStyle = cSel; g.globalAlpha = 0.12; g.fillRect(xa, 0, xb - xa, H); g.globalAlpha = 1; }
   const n = wave.peaks.length / 2, mid = H / 2;
   for (let x = 0; x < W; x++) {
     const i0 = Math.floor((x / W) * n), i1 = Math.max(i0 + 1, Math.floor(((x + 1) / W) * n));
     let lo = 0, hi = 0;
     for (let i = i0; i < i1 && i < n; i++) { lo = Math.min(lo, wave.peaks[2 * i]); hi = Math.max(hi, wave.peaks[2 * i + 1]); }
-    g.fillStyle = x >= xa && x <= xb ? cSel : cWave;
+    g.fillStyle = !wave.preview && x >= xa && x <= xb ? cSel : cWave;
     g.fillRect(x, mid - hi * mid * 0.95, 1, Math.max(1, (hi - lo) * mid * 0.95));
   }
   /* slice boundaries from the analysis of this range */
@@ -430,10 +587,12 @@ function drawWave() {
     g.stroke(); g.globalAlpha = 1;
   }
   g.fillStyle = cSel;
-  for (const x of [xa, xb]) g.fillRect(Math.round(x) - 1, 0, 2, H);
+  if (!wave.preview) for (const x of [xa, xb]) g.fillRect(Math.round(x) - 1, 0, 2, H);
   if (playing && playing.path === s.path && actx) {
-    const t = playing.from + (actx.currentTime - playing.t0) * playing.rate;
+    const t = playing.from + (actx.currentTime - playing.t0);
     if (t <= playing.to) { g.fillStyle = cInk; g.fillRect((t / dur) * W, 0, 1, H); }
+  } else if (paused && paused.path === s.path) {
+    g.fillStyle = cInk; g.fillRect((paused.pos / dur) * W, 0, 1, H);
   }
 }
 
@@ -445,36 +604,37 @@ function renderFolderEditor(ed, s) {
   const apply = async () => {
     s.include = split(inc.value); s.exclude = split(exc.value);
     if (rec.checked !== (s.recurse !== false)) { s.recurse = rec.checked; s.files = await expandFolder(s.path, s.recurse); }
-    markDirty(); renderSources(); listFiles(); scheduleAnalysis();
+    markDirty(); renderSources(); scheduleAnalysis();
   };
   inc.addEventListener('change', apply); exc.addEventListener('change', apply); rec.addEventListener('change', apply);
   ed.append(el('div', { class: 'row' },
     el('label', { class: 'muted' }, 'Only ', inc), el('label', { class: 'muted' }, 'Skip ', exc),
     el('label', { class: 'muted' }, rec, ' subfolders'),
-    el('button', { title: 'Re-read the folder from the Move', onclick: async () => { s.files = await expandFolder(s.path, s.recurse !== false); renderSources(); listFiles(); scheduleAnalysis(); } }, 'Refresh')));
-  const box = el('div', { id: 'folderFiles' });
-  ed.append(box);
-  function listFiles() {
-    box.textContent = '';
-    const used = new Set(items().filter((it) => S.sources[it.src] === s).map((it) => it.path));
-    for (const f of s.files || []) {
-      const on = used.has(f), bn = baseName(f);
-      box.append(el('div', { class: 'lib-row' + (on ? '' : ' off'), title: f },
-        el('span', { class: 'nm' }, relPath(f).slice(relPath(s.path).length + 1) || bn),
-        el('button', { title: 'Listen', onclick: () => playFile(f) }, '▶'),
-        on ? el('button', { title: 'Leave this file out (adds it to Skip)', onclick: () => { s.exclude = [...(s.exclude || []), bn]; exc.value = s.exclude.join(', '); markDirty(); renderSources(); listFiles(); scheduleAnalysis(); } }, '✕')
-           : null));
-    }
-    if (!(s.files || []).length) box.append(el('div', { class: 'lib-row muted' }, 'No audio files'));
-  }
-  listFiles();
+    el('button', { title: 'Re-read the folder from the Move', onclick: async () => { s.files = await expandFolder(s.path, s.recurse !== false); renderSources(); scheduleAnalysis(); } }, 'Refresh')),
+    el('div', { class: 'row muted' }, s.open ? 'Click a file above to see it; ↑/↓ steps through the files and plays each one.'
+                                             : el('span', {}, el('button', { onclick: () => { s.open = true; renderSources(); renderEditor(); } }, '▸ Show the files'), ' to hear them one by one and leave some out.')));
 }
 
 /* ── audio ─────────────────────────────────────────────────────────────────── */
-let actx = null, playing = null, rafId = 0;
+/* One transport for the whole page. A play button is keyed by file + range: pressing it
+ * while that sound plays pauses it, pressing it again resumes from there. Only Stop
+ * (button, Esc) or reaching the end goes back to the start. */
+let actx = null, rafId = 0;
+let playing = null;   /* {node, key, path, from, to, t0} seconds; the sound now playing */
+let paused = null;    /* {key, path, pos, to} seconds; where a paused sound resumes */
 const audioMem = new Map();   /* path -> Float32Array (LRU, ~40 M samples) */
 function ctx() { if (!actx) actx = new AudioContext(); if (actx.state === 'suspended') actx.resume(); return actx; }
-function stopAudio() { if (playing) { try { playing.node.stop(); } catch (e) { /* ignore */ } playing = null; } drawWave(); }
+const playKey = (path, start, end) => `${path}|${+(start || 0).toFixed(3)}|${end > start ? +end.toFixed(3) : 0}`;
+function halt() {   /* silence the node without touching transport state */
+  if (playing) { const n = playing.node; playing = null; try { n.onended = null; n.stop(); } catch (e) { /* ignore */ } }
+}
+function stopAudio() { halt(); paused = null; refreshPlayButtons(); drawWave(); }
+function pauseAudio() {
+  if (!playing) return;
+  const pos = playing.from + (actx.currentTime - playing.t0);
+  paused = playing.key ? { key: playing.key, path: playing.path, pos: Math.min(pos, playing.to), to: playing.to } : null;
+  halt(); refreshPlayButtons(); drawWave();
+}
 async function decodedAudio(path) {
   if (audioMem.has(path)) { const a = audioMem.get(path); audioMem.delete(path); audioMem.set(path, a); return a; }
   setStatus(`Loading ${baseName(path)}…`);
@@ -488,11 +648,12 @@ async function decodedAudio(path) {
   for (const [k, a] of audioMem) { if (total <= 40e6 || audioMem.size <= 1) break; audioMem.delete(k); total -= a.length; }
   return r.audio;
 }
-async function playFrames(path, a0, a1) {
+async function playFrames(path, a0, a1, key) {
   const c = ctx();
   const audio = await decodedAudio(path);
   const from = Math.max(0, Math.min(audio.length, a0)), to = Math.max(from + 1, Math.min(audio.length, a1 || audio.length));
-  stopAudio();
+  halt();
+  paused = null;
   const buf = c.createBuffer(1, to - from, SR);
   const ch = buf.getChannelData(0);
   ch.set(audio.subarray(from, to));
@@ -500,15 +661,42 @@ async function playFrames(path, a0, a1) {
   for (let i = 0; i < fade; i++) { const g = i / fade; ch[i] *= g; ch[ch.length - 1 - i] *= g; }
   const node = c.createBufferSource();
   node.buffer = buf; node.connect(c.destination); node.start();
-  playing = { node, path, from: from / SR, to: to / SR, t0: c.currentTime, rate: 1 };
-  node.onended = () => { if (playing && playing.node === node) { playing = null; drawWave(); } };
+  playing = { node, key: key || null, path, from: from / SR, to: to / SR, t0: c.currentTime };
+  node.onended = () => { if (playing && playing.node === node) { playing = null; refreshPlayButtons(); drawWave(); } };   /* end: back to the start */
+  refreshPlayButtons();
   cancelAnimationFrame(rafId);
   const tick = () => { if (playing && playing.node === node) { drawWave(); rafId = requestAnimationFrame(tick); } };
   tick();
 }
+const playErr = (e) => setStatus(String(e.message || e), 'bad');
+/* Play from the start (arrow keys, waveform clicks): no pause/resume. */
 function playFile(path, start, end) {
-  playFrames(path, Math.round((start || 0) * SR), end > start ? Math.round(end * SR) : 0).catch((e) => setStatus(String(e.message || e), 'bad'));
+  playFrames(path, Math.round((start || 0) * SR), end > start ? Math.round(end * SR) : 0, playKey(path, start, end)).catch(playErr);
 }
+/* What a play button does. */
+function togglePlay(path, start, end) {
+  const key = playKey(path, start, end);
+  if (playing && playing.key === key) { pauseAudio(); return; }
+  if (paused && paused.key === key) {
+    playFrames(path, Math.round(paused.pos * SR), Math.round(paused.to * SR), key).catch(playErr);
+    return;
+  }
+  playFile(path, start, end);
+}
+/* A play button that follows the transport: ▶ / ⏸ (labelled variants for the editor). */
+function playBtn(path, start, end, opts = {}) {
+  const b = el('button', { class: opts.cls || 'icon', 'data-play': playKey(path, start, end), 'data-label': opts.label || '' ,
+    onclick: (e) => { e.stopPropagation(); togglePlay(path, start, end); } });
+  paintPlayBtn(b);
+  return b;
+}
+function paintPlayBtn(b) {
+  const on = playing && playing.key === b.dataset.play, lab = b.dataset.label;
+  b.textContent = on ? (lab ? '⏸︎ Pause' : '⏸︎') : (lab ? `▶︎ ${lab}` : '▶︎');   /* FE0E: text glyphs, not emoji */
+  b.title = on ? 'Pause' : (paused && paused.key === b.dataset.play ? 'Resume' : 'Listen');
+  b.classList.toggle('on', !!on);
+}
+function refreshPlayButtons() { for (const b of document.querySelectorAll('button[data-play]')) paintPlayBtn(b); }
 
 /* ── analysis queue ───────────────────────────────────────────────────────── */
 let runToken = 0, analysisTimer = 0;
@@ -752,8 +940,10 @@ function onMapPick(i) {
   if (!corpus) return;
   const s = sliceInfo(i);
   playFrames(s.it.path, s.from, s.from + s.len).catch((e) => setStatus(String(e.message || e), 'bad'));
-  const si = s.it.src, src = S.sources[si];
-  if (src && S.sel !== src.id) { S.sel = src.id; renderSources(); renderEditor(); }
+  const src = S.sources[s.it.src];
+  if (!src) return;
+  const f = src.kind === 'folder' ? s.it.path : null;
+  if (S.sel !== src.id || S.selFile !== f) { S.sel = src.id; S.selFile = f; if (f) src.open = true; renderSources(); renderEditor(); }
 }
 
 /* ── .concat files ─────────────────────────────────────────────────────────── */
@@ -852,7 +1042,7 @@ async function applyDoc(doc, fallbackName) {
     else { s.missing = !(await listDir(p).then(() => true, () => false)); if (!s.missing) s.files = await expandFolder(p, s.recurse); }
     S.sources.push(s);
   }
-  S.sel = null;
+  S.sel = null; S.selFile = null;
   $('name').value = S.name; syncSlicingInputs();
   renderSources(); renderEditor(); recompute(); scheduleAnalysis();
   return S.sources.filter((s) => s.missing).length;
@@ -879,7 +1069,7 @@ async function restoreDraft() {
 }
 function newCorpus() {
   if (S.dirty && !confirm('Discard unsaved changes?')) return;
-  Object.assign(S, { name: 'Untitled', sources: [], exclude: [], slicing: { ...DEFAULT_SLICING }, use: new Set(GROUPS.map((g) => g.id)), sel: null, dirty: false, loadedName: null });
+  Object.assign(S, { name: 'Untitled', sources: [], exclude: [], slicing: { ...DEFAULT_SLICING }, use: new Set(GROUPS.map((g) => g.id)), sel: null, selFile: null, dirty: false, loadedName: null });
   clearDraft();
   $('name').value = S.name; syncSlicingInputs(); updateTitle();
   renderSources(); renderEditor(); recompute(); setStatus('');
@@ -928,9 +1118,34 @@ function init() {
   });
   try { const t = localStorage.getItem('concat-builder-theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) { /* ignore */ }
   window.addEventListener('beforeunload', (e) => { if (S.dirty) { e.preventDefault(); e.returnValue = ''; } });
+  /* Keys act on the panel last clicked: library or corpus list. */
+  let panel = 'lib';
+  $('libCol').addEventListener('pointerdown', () => { panel = 'lib'; });
+  $('corpusCol').addEventListener('pointerdown', () => { panel = 'src'; });
+  $('rightCol').addEventListener('pointerdown', () => { panel = 'map'; });
+  $('btnAddSel').addEventListener('click', () => { const l = libSelected(); if (l.length) addSources(l); });
   window.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save(); }
-    if (e.key === ' ' && e.target === document.body) { e.preventDefault(); stopAudio(); }
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && e.key === 's') { e.preventDefault(); save(); return; }
+    if (e.target.closest('input, textarea, select, dialog')) return;     /* typing: native keys */
+    if (mod && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); panel = 'lib'; selectAllLib(); return; }
+    if (e.key === 'Escape') { libSel = new Set(); paintLibSel(); stopAudio(); return; }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const d = e.key === 'ArrowDown' ? 1 : -1;
+      if (panel === 'src') navMove(d); else if (panel === 'lib') libMove(d);
+      return;
+    }
+    if (panel === 'src' && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) { e.preventDefault(); navOpen(e.key === 'ArrowRight'); return; }
+    if (panel === 'lib' && e.key === 'Enter') { const l = libSelected(); if (l.length) addSources(l); return; }
+    if (e.key === ' ') {
+      e.preventDefault();
+      if (panel === 'lib') { const r = libRows[libAnchor]; if (r && !r.dir) togglePlay(r.path, 0, 0); else if (playing) pauseAudio(); return; }
+      const s = selected();
+      if (s && S.selFile) togglePlay(S.selFile, 0, 0);
+      else if (s && s.kind === 'file' && !s.missing) togglePlay(s.path, s.start, s.end);
+      else if (playing) pauseAudio();
+    }
   });
   bindDrop(); bindSlicing(); syncSlicingInputs(); updateTitle();
   showLib(LIB + '/Samples').catch(() => showLib(LIB));

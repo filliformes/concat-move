@@ -102,8 +102,9 @@ With the Move on your network (or USB), open this in a desktop browser:
 http://move.local:7700/api/remote-ui/module-assets/concat/builder/app.html
 ```
 
-- **Library** (left): your `UserLibrary`. Drag a folder or a sample onto the corpus list, or use **+**. **▶** plays a sample.
-- **Corpus sources** (middle): click a source to edit it. A sample shows its waveform: drag on it to keep only that part. A folder takes **Only** / **Skip** name patterns (`*Kick*`, `*click*`) and a subfolders switch. **✕** removes a source from the corpus; the file stays on the Move.
+- **Library** (left): your `UserLibrary`. Drag a folder or a sample onto the corpus column, or use **+**. Click to select, Ctrl/Shift-click for more, **Ctrl+A** for every sample in the folder, then drag them all or press **Add**. **↑/↓** steps through samples and plays each one.
+- **Playing**: **▶** turns into **⏸** while a sound plays. ⏸ pauses, ▶ resumes from there, **■ Stop** or **Esc** goes back to the start. **Space** plays or pauses the selected sample.
+- **Corpus sources** (middle): click a source to edit it. A sample shows its waveform: drag on it to keep only that part. A folder arrives collapsed: open it (**▸**) to see its samples, play them one by one, and leave some out with **✕** (**+** puts them back). **↑/↓** steps through them, **→/←** opens and closes a folder. **Trim on its own** pulls a sample out of its folder so you can trim it. A folder also takes **Only** / **Skip** name patterns (`*Kick*`, `*click*`) and a subfolders switch. **✕** removes a source from the corpus; the file stays on the Move.
 - **Slicing** (bottom): the same onset/fixed slicing as the Corpus page, saved into the file.
 - **Map** (right): every slice of the corpus, placed by PCA of the chosen descriptors. Drag to rotate, wheel to zoom, click a dot to hear that slice. **Move view** shows the 2-D plane the **Learned** map uses on the Move.
 - **Descriptors** tab: min, median, IQR and a histogram for each of the 36 descriptors, a checkbox per group, and how much each one shapes the map.
