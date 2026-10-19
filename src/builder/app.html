@@ -24,6 +24,7 @@
   --wave: #7d786d; --wave-sel: #f97316; --map-axis: #4a4842; --map-ink: #ecebe6;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; }
 body { display: flex; flex-direction: column; }
 body { background: var(--bg); color: var(--ink); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -105,6 +106,26 @@ section:last-child { border-right: 0; }
 .tabs button.on { background: var(--panel); border-color: var(--line); color: var(--accent); }
 #mapWrap { position: relative; flex: 1; min-height: 0; background: var(--panel); }
 #map { width: 100%; height: 100%; display: block; touch-action: none; }
+#mapBar { display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+#mapBar label { display: flex; gap: 4px; align-items: center; color: var(--ink2); }
+#mapBar .grow { flex: 1; }
+#playBar { position: absolute; left: 10px; bottom: 30px; max-width: calc(100% - 20px); display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  background: color-mix(in srgb, var(--panel) 88%, transparent); border: 1px solid var(--line); border-radius: var(--radius); padding: 5px 8px; }
+#playBar label { display: flex; gap: 4px; align-items: center; color: var(--ink2); font-size: 12px; }
+#playBar input[type=range] { width: 64px; accent-color: var(--accent); }
+#playBar span { min-width: 34px; font-variant-numeric: tabular-nums; color: var(--ink); }
+#legend { position: absolute; right: 10px; top: 10px; max-width: 60%; font-size: 11px; color: var(--ink2); text-align: right;
+  background: color-mix(in srgb, var(--panel) 85%, transparent); border-radius: var(--radius); padding: 4px 6px; }
+#legend:empty { display: none; }
+#legend .bar { width: 140px; height: 8px; border-radius: 4px; margin: 3px 0 2px auto; }
+#legend .ends { display: flex; justify-content: space-between; width: 140px; margin-left: auto; }
+.pool { display: inline-flex; align-items: center; gap: 6px; }
+.pool .meter { width: 60px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; display: inline-block; }
+.pool .meter i { display: block; height: 100%; background: var(--ok); }
+.pool.warn .meter i { background: var(--accent); } .pool.over .meter i { background: var(--bad); }
+.pool.warn b, .pool.over b { color: var(--accent); }
+table.keys td { padding: 3px 10px 3px 0; vertical-align: top; }
+table.keys td:first-child { font-family: var(--mono); white-space: nowrap; color: var(--accent); }
 #mapTip { position: absolute; left: 10px; bottom: 10px; right: 10px; color: var(--ink2); font-size: 12px; pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #mapEmpty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--ink2); text-align: center; padding: 20px; }
 #summary { display: flex; gap: 14px; padding: 8px 10px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
@@ -169,18 +190,57 @@ dialog .foot { padding: 10px; display: flex; gap: 8px; justify-content: flex-end
     <div class="head">
       <div class="tabs"><button id="tabMap" class="on">Map</button><button id="tabDesc">Descriptors</button></div>
       <span class="grow"></span>
-      <button id="btnMoveView" title="The 2-D Learned map Concat plays on the Move">Move view</button>
-      <button id="btnOrbit" title="Tilted 3-D view">3D</button>
+      <button id="btnHelp" class="icon" title="Keys and tips (?)">?</button>
     </div>
     <div id="summary"></div>
+    <div id="mapBar">
+      <select id="mapAxes" title="Which of Concat's two map modes to show">
+        <option value="learned">Learned map (PCA)</option>
+        <option value="raw">Raw map (X / Y)</option>
+      </select>
+      <label class="rawOnly">X <select id="rawX"></select></label>
+      <label class="rawOnly">Y <select id="rawY"></select></label>
+      <label>Colour <select id="colorBy"></select></label>
+      <span class="grow"></span>
+      <button id="btnMoveView" class="learnedOnly" title="Flat: the plane Concat's Learned map navigates on the Move">Move view</button>
+      <button id="btnOrbit" class="learnedOnly" title="Tilted 3-D view">3D</button>
+    </div>
     <div id="mapWrap">
       <canvas id="map"></canvas>
       <div id="mapEmpty">Add sources to see the corpus map.<br>Each dot is a slice; click one to hear it.</div>
+      <div id="legend"></div>
+      <div id="playBar">
+        <button id="btnPlay" title="Press and drag on the map to play it like Concat (or hold Shift in rotate mode). P toggles.">▶︎ Play the map</button>
+        <label title="Grains per second (Concat: Density)">Density <input id="pDensity" type="range" min="1" max="60" step="1"><span id="pDensityV"></span></label>
+        <label title="Grain length (Concat: Grain Size)">Grain <input id="pGrain" type="range" min="20" max="1000" step="10"><span id="pGrainV"></span></label>
+        <label title="How many nearest slices a grain picks from (Concat: K Nearest)">Spread <input id="pSpread" type="range" min="1" max="16" step="1"><span id="pSpreadV"></span></label>
+      </div>
       <div id="mapTip"></div>
     </div>
     <div class="scroll" id="desc" hidden></div>
   </section>
 </main>
+
+<dialog id="dlgHelp">
+  <div class="head"><span class="grow">Keys and tips</span></div>
+  <div class="body">
+    <table class="keys">
+      <tr><td>Ctrl+A</td><td>select every sample in the library folder</td></tr>
+      <tr><td>Enter</td><td>add the selected library samples</td></tr>
+      <tr><td>↑ / ↓</td><td>step through samples (library or corpus) and play each one</td></tr>
+      <tr><td>→ / ←</td><td>open / close a folder source</td></tr>
+      <tr><td>Space</td><td>play or pause the selected sample</td></tr>
+      <tr><td>Esc</td><td>stop (back to the start), clear selections, show the whole map</td></tr>
+      <tr><td>Click a source</td><td>its slices light up on the map</td></tr>
+      <tr><td>P</td><td>map: switch between rotate and play</td></tr>
+      <tr><td>Shift + drag</td><td>map: play while in rotate mode</td></tr>
+      <tr><td>Ctrl+S</td><td>save the corpus to the Move</td></tr>
+    </table>
+    <p class="muted">The map shows what Concat navigates. <b>Raw</b> is Concat's default Map Mode (X = Bright, Y = Pitch); <b>Learned</b> spreads the corpus by PCA of the descriptors you keep. Playing the map uses Concat's pick rule: a random slice among the nearest few.</p>
+    <p class="muted">Unused descriptors are left out of the search and of the Learned map. A Raw axis set to an unused descriptor goes flat on the Move too.</p>
+  </div>
+  <div class="foot"><button id="helpClose">Close</button></div>
+</dialog>
 
 <dialog id="dlgOpen">
   <div class="head"><span class="grow">Open a corpus</span></div>

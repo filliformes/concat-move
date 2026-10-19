@@ -266,8 +266,13 @@ async function showLib(path) {
   lib.textContent = 'Loading…';
   paintLibSel();
   let rows;
-  try { rows = await listDir(path); } catch (e) { lib.textContent = String(e.message); return; }
+  try { rows = await listDir(path); } catch (e) {
+    if (path !== LIB && path !== libPath) return;
+    if (path !== LIB) { showLib(LIB); return; }               /* a folder that went away: back to the top */
+    lib.textContent = String(e.message); return;
+  }
   if (path !== libPath) return;                        /* a newer navigation won */
+  try { localStorage.setItem('concat-builder-lib', path); } catch (e) { /* ignore */ }
   lib.textContent = '';
   libRows = rows.filter((r) => r.dir || AUDIO_RE.test(r.name));
   if (!libRows.length) lib.append(el('div', { class: 'lib-row muted' }, 'No folders or audio here'));
@@ -444,7 +449,20 @@ function navOpen(open) {
 /* ── editor (selected source, or a file inside a folder source) ───────────── */
 let wave = null;   /* {canvas, s, frames, peaks, inputs, preview} */
 function selected() { return S.sources.find((s) => s.id === S.sel) || null; }
+/* The selected source (or file in a folder) lights up on the map. */
+function updateFocus() {
+  if (!corpus || !map) return;
+  const s = selected();
+  if (!s) { map.setFocus(null); return; }
+  const si = S.sources.indexOf(s), set = new Set();
+  for (let i = 0; i < corpus.n; i++) {
+    const it = corpus.its[corpus.item[i]];
+    if (it.src === si && (!S.selFile || it.path === S.selFile)) set.add(i);
+  }
+  map.setFocus(set);
+}
 function renderEditor() {
+  updateFocus();
   const ed = $('editor');
   const s = selected();
   ed.textContent = '';
@@ -635,17 +653,18 @@ function pauseAudio() {
   paused = playing.key ? { key: playing.key, path: playing.path, pos: Math.min(pos, playing.to), to: playing.to } : null;
   halt(); refreshPlayButtons(); drawWave();
 }
-async function decodedAudio(path) {
+const AUDIO_MEM_CAP = 64e6;   /* decoded samples kept for playback (~256 MB) */
+async function decodedAudio(path, quiet) {
   if (audioMem.has(path)) { const a = audioMem.get(path); audioMem.delete(path); audioMem.set(path, a); return a; }
-  setStatus(`Loading ${baseName(path)}…`);
+  if (!quiet) setStatus(`Loading ${baseName(path)}…`);
   const bytes = await download(path);
   const r = await work({ op: 'decode', bytes: bytes.buffer, name: path, audio: true }, [bytes.buffer]);
-  setStatus('');
+  if (!quiet) setStatus('');
   if (!r.ok || !r.audio) throw new Error(r.error || "can't decode");
   audioMem.set(path, r.audio);
   let total = 0;
   for (const a of audioMem.values()) total += a.length;
-  for (const [k, a] of audioMem) { if (total <= 40e6 || audioMem.size <= 1) break; audioMem.delete(k); total -= a.length; }
+  for (const [k, a] of audioMem) { if (total <= AUDIO_MEM_CAP || audioMem.size <= 1) break; audioMem.delete(k); total -= a.length; }
   return r.audio;
 }
 async function playFrames(path, a0, a1, key) {
@@ -736,8 +755,10 @@ async function runAnalysis() {
         const hit = await idb.get('analysis', key);
         if (hit) results.set(key, hit);
         else {
-          setStatus(`Analysing ${done + 1}/${its.length} · ${baseName(it.path)}`);
-          const bytes = await download(it.path);
+          const label = `Analysing ${done + 1}/${its.length} · ${baseName(it.path)}`;
+          setStatus(label);
+          const bytes = await download(it.path, (p) => { if (p < 1 && token === runToken) setStatus(`${label} · loading ${Math.round(p * 100)}%`); });
+          if (token === runToken) setStatus(label);
           if (token !== runToken) return;
           const pk = S.sources[it.src].kind === 'file' && !peaksMem.has(peakKey(it.path)) ? PEAK_BINS : 0;   /* waveform: file sources only */
           const r = await work({ op: 'analyse', bytes: bytes.buffer, name: it.path, start: it.start, end: it.end, slicing: S.slicing, peaks: pk }, [bytes.buffer]);
@@ -860,12 +881,24 @@ function recompute() {
     eig.contrib = new Float64Array(NDESC);
     for (let c = 0; c < 3; c++) for (let d = 0; d < NDESC; d++) eig.contrib[d] += eig.share[c] * eig.axes[c][d] ** 2;
   }
-  corpus = { n, raw, item, slice, its, proj, stats, eig, used };
-  const colours = new Array(n);
-  for (let i = 0; i < n; i++) colours[i] = colourOf(its[item[i]].src);
-  map.setPoints(proj, colours);
+  corpus = { n, raw, qn, item, slice, its, proj, stats, eig, used };
+  updateMap();
+  updateFocus();
   $('mapEmpty').style.display = n ? 'none' : '';
   renderSummary(); renderDesc(); renderSources(); drawWave();
+}
+
+/* Concat's Pool Cap: 128 MB by default, 512 MB max (free RAM can lower it on the day). */
+function poolMeter(mb) {
+  const CAP = 128, MAX = 512;
+  const cls = mb <= CAP ? '' : mb <= MAX ? 'warn' : 'over';
+  const pct = Math.min(100, (mb / (mb <= CAP ? CAP : MAX)) * 100);
+  const need = Math.ceil(mb + 1);
+  const title = mb <= CAP ? "Fits Concat's default Pool Cap (128 MB): every slice stays playable."
+    : mb <= MAX ? `Above the default 128 MB. Set Pool Cap (Corpus page) to at least ${need} MB to keep every slice; otherwise Concat keeps an even subset.`
+    : "Above Concat's 512 MB maximum: Concat keeps an even subset of the slices. Trim sources or leave some out.";
+  const txt = mb <= CAP ? ' of 128 MB pool' : mb <= MAX ? ` pool: Pool Cap ≥ ${need} MB` : ' pool: over 512 MB';
+  return el('span', { class: 'pool ' + cls, title }, el('b', {}, `${mb.toFixed(1)} MB`), el('span', { class: 'meter' }, el('i', { style: `width:${pct}%` })), txt);
 }
 
 function renderSummary() {
@@ -880,7 +913,7 @@ function renderSummary() {
     el('span', {}, el('b', {}, corpus.n.toLocaleString()), ' slices'),
     el('span', {}, el('b', {}, files < total ? `${files}/${total}` : files), ' files'),
     el('span', {}, el('b', {}, fmtTime(secs)), ' of audio'),
-    el('span', { title: 'Pool memory on the Move at 44.1 kHz mono int16. The default Pool Cap is 128 MB.' }, el('b', {}, mb.toFixed(1)), ' MB pool'),
+    poolMeter(mb),
     el('span', {}, el('b', {}, `${usedN}/${NDESC}`), ' descriptors'),
     corpus.eig ? el('span', { title: 'Variance captured by the first two axes = how faithful the Move\'s 2-D map is' }, el('b', {}, `${Math.round((corpus.eig.share[0] + corpus.eig.share[1]) * 100)}%`), ' on the Move map') : null].filter(Boolean));
 }
@@ -932,7 +965,11 @@ function sliceInfo(i) {
 }
 function onMapHover(i) {
   const tip = $('mapTip');
-  if (i < 0 || !corpus) { tip.textContent = corpus && corpus.n ? 'Drag to rotate · wheel to zoom · click a dot to hear it' : ''; return; }
+  if (i < 0 || !corpus) {
+    tip.textContent = !corpus || !corpus.n ? '' : map.mode === 'play' ? 'Press and drag on the map to play it · wheel to zoom'
+      : `${map.flat ? '' : 'Drag to rotate · '}Shift+drag to play · wheel to zoom · click a dot to hear it`;
+    return;
+  }
   const s = sliceInfo(i);
   tip.textContent = `${relPath(s.it.path)} · ${fmtTime(s.from / SR)} · ${Math.round((s.len / SR) * 1000)} ms`;
 }
@@ -944,6 +981,185 @@ function onMapPick(i) {
   if (!src) return;
   const f = src.kind === 'folder' ? s.it.path : null;
   if (S.sel !== src.id || S.selFile !== f) { S.sel = src.id; S.selFile = f; if (f) src.open = true; renderSources(); renderEditor(); }
+}
+
+/* ── map views, colours, and playing the map ─────────────────────────────── */
+/* Page preferences (not part of the corpus): kept per browser. */
+const PREFS_KEY = 'concat-builder-prefs';
+const P = { view: 'learned', rawX: 0, rawY: 1, colorBy: 'source', density: 20, grain: 120, spread: 4 };
+function loadPrefs() { try { Object.assign(P, JSON.parse(localStorage.getItem(PREFS_KEY) || '{}')); } catch (e) { /* ignore */ } }
+function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(P)); } catch (e) { /* ignore */ } }
+
+/* Concat's X/Y Descriptor menu and the dims it maps to (desc_index in concat.c). */
+const RAW_AXES = [['Bright', 13], ['Pitch', 34], ['Loud', 32], ['Noisy', 14], ['Rolloff', 15], ['MFCC1', 1], ['MFCC2', 2], ['MFCC3', 3]];
+const COLOR_BY = [['source', 'Source'], ['32', 'Loudness'], ['13', 'Brightness'], ['14', 'Noisiness'], ['34', 'Pitch'], ['15', 'Zero crossings']];
+const RAMP = [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]];   /* viridis-like, readable both themes */
+function rampColour(t) {
+  const x = Math.max(0, Math.min(1, t)) * (RAMP.length - 1), i = Math.min(RAMP.length - 2, Math.floor(x)), f = x - i;
+  const c = RAMP[i].map((v, k) => Math.round(v + f * (RAMP[i + 1][k] - v)));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+function mapColours() {
+  const n = corpus.n, out = new Array(n);
+  if (P.colorBy === 'source') { for (let i = 0; i < n; i++) out[i] = colourOf(corpus.its[corpus.item[i]].src); return out; }
+  const d = +P.colorBy, idx = new Uint32Array(n);
+  for (let i = 0; i < n; i++) idx[i] = i;
+  idx.sort((a, b) => corpus.raw[a * NDESC + d] - corpus.raw[b * NDESC + d]);
+  for (let r = 0; r < n; r++) out[idx[r]] = rampColour(n > 1 ? r / (n - 1) : 0.5);   /* by rank: every colour gets used */
+  return out;
+}
+
+function renderLegend() {
+  const lg = $('legend'); lg.textContent = '';
+  if (!corpus || !corpus.n) return;
+  const notes = [];
+  if (P.view === 'raw') {
+    for (const k of [P.rawX, P.rawY]) if (!corpus.used[RAW_AXES[k][1]]) notes.push(`${RAW_AXES[k][0]} is not used by this corpus: flat on the Move too`);
+  }
+  if (P.colorBy !== 'source') {
+    const d = +P.colorBy, st = corpus.stats[d], name = COLOR_BY.find((c) => c[0] === P.colorBy)[1];
+    const bar = el('div', { class: 'bar' });
+    bar.style.background = `linear-gradient(90deg, ${RAMP.map((c, i) => `rgb(${c}) ${(i / (RAMP.length - 1)) * 100}%`).join(', ')})`;
+    lg.append(el('div', {}, name), bar, el('div', { class: 'ends' }, el('span', {}, fmtNum(st.min)), el('span', {}, fmtNum(st.max))));
+  }
+  for (const t of notes) lg.append(el('div', { style: 'color: var(--bad)' }, t));
+}
+
+function updateMap() {
+  for (const e of document.querySelectorAll('.rawOnly')) e.hidden = P.view !== 'raw';
+  for (const e of document.querySelectorAll('.learnedOnly')) e.hidden = P.view === 'raw';
+  if (!corpus) return;
+  const n = corpus.n;
+  if (P.view === 'raw') {
+    const dx = RAW_AXES[P.rawX][1], dy = RAW_AXES[P.rawY][1], xyz = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { xyz[3 * i] = corpus.qn[i * NDESC + dx]; xyz[3 * i + 1] = corpus.qn[i * NDESC + dy]; }
+    map.setPoints(xyz, mapColours(), [RAW_AXES[P.rawX][0], RAW_AXES[P.rawY][0], ''], true);
+  } else {
+    map.setPoints(corpus.proj, mapColours(), ['PC1', 'PC2', 'PC3'], false);
+  }
+  renderLegend();
+}
+
+function bindMapBar() {
+  const fill = (sel, opts, val) => { sel.textContent = ''; opts.forEach(([v, l]) => sel.append(el('option', { value: v }, l))); sel.value = String(val); };
+  fill($('rawX'), RAW_AXES.map((a, i) => [i, a[0]]), P.rawX);
+  fill($('rawY'), RAW_AXES.map((a, i) => [i, a[0]]), P.rawY);
+  fill($('colorBy'), COLOR_BY, P.colorBy);
+  $('mapAxes').value = P.view;
+  const on = (id, fn) => $(id).addEventListener('change', () => { fn($(id).value); savePrefs(); updateMap(); });
+  on('mapAxes', (v) => { P.view = v; });
+  on('rawX', (v) => { P.rawX = +v; });
+  on('rawY', (v) => { P.rawY = +v; });
+  on('colorBy', (v) => { P.colorBy = v; });
+  const slider = (id, key, fmt) => {
+    const inp = $(id), out = $(id + 'V');
+    inp.value = P[key]; out.textContent = fmt(P[key]);
+    inp.addEventListener('input', () => { P[key] = +inp.value; out.textContent = fmt(P[key]); savePrefs(); });
+  };
+  slider('pDensity', 'density', (v) => `${v}/s`);
+  slider('pGrain', 'grain', (v) => `${v} ms`);
+  slider('pSpread', 'spread', (v) => String(v));
+  $('btnPlay').addEventListener('click', () => setPlayMode(map.mode !== 'play'));
+  updateMap();
+}
+
+/* Playing the map: Concat's Map mode in the browser. While the pointer is down, grains
+ * fire at Density per second; each picks a random slice among the Spread (K) nearest
+ * dots to the pointer, avoiding the last 4 played (Concat's Repeat Avoid default), with
+ * a Hann window and Concat's default pan spread. Audio is decoded on demand. */
+const G = { pos: null, timer: 0, next: 0, recent: [], spreadPx: 24, out: null, loading: new Set(), lastTip: -1 };
+let hann = null;
+const bufOf = new WeakMap();   /* decoded Float32Array -> AudioBuffer */
+function grainOut() {
+  if (!G.out) {
+    const c = ctx(), comp = c.createDynamicsCompressor(), g = c.createGain();
+    comp.threshold.value = -14; comp.ratio.value = 4; g.gain.value = 0.7;
+    g.connect(comp); comp.connect(c.destination);
+    G.out = g;
+  }
+  return G.out;
+}
+function wantAudio(path) {
+  if (audioMem.has(path) || G.loading.has(path)) return;
+  G.loading.add(path);
+  $('mapTip').textContent = `Loading audio: ${baseName(path)}…`;
+  decodedAudio(path, true).catch(() => {}).finally(() => G.loading.delete(path));
+}
+function playGrain(i, when) {
+  const s = sliceInfo(i), arr = audioMem.get(s.it.path);
+  if (!arr) { wantAudio(s.it.path); return false; }
+  const c = ctx();
+  const dur = Math.min(P.grain / 1000, s.len / SR);
+  if (dur < 0.005) return false;
+  let buf = bufOf.get(arr);
+  if (!buf) { buf = c.createBuffer(1, arr.length, SR); buf.copyToChannel(arr, 0); bufOf.set(arr, buf); }
+  if (!hann) { hann = new Float32Array(64); for (let k = 0; k < 64; k++) hann[k] = 0.5 - 0.5 * Math.cos((2 * Math.PI * k) / 63); }
+  const src = c.createBufferSource(), g = c.createGain();
+  src.buffer = buf;
+  g.gain.setValueAtTime(0, when);
+  g.gain.setValueCurveAtTime(hann, when, dur);
+  src.connect(g);
+  if (c.createStereoPanner) { const p = c.createStereoPanner(); p.pan.value = (Math.random() * 2 - 1) * 0.3; g.connect(p); p.connect(grainOut()); }
+  else g.connect(grainOut());
+  src.start(when, s.from / SR, dur);
+  return true;
+}
+function grainTick() {
+  if (!G.pos || !corpus || !corpus.n) return;
+  const c = ctx(), now = c.currentTime;
+  if (G.next < now) G.next = now + 0.005;
+  const near = map.nearestK(G.pos.x, G.pos.y, P.spread);
+  G.spreadPx = Math.max(6, near.r);
+  if (!near.idx.length) return;
+  let guard = 0;
+  while (G.next < now + 0.08 && guard++ < 16) {                /* schedule 80 ms ahead on the audio clock */
+    const pool = near.idx.filter((i) => !G.recent.includes(i));
+    const pick = (pool.length ? pool : near.idx)[Math.floor(Math.random() * (pool.length || near.idx.length))];
+    if (playGrain(pick, G.next)) {
+      map.flash(pick);
+      G.recent.push(pick); if (G.recent.length > 4) G.recent.shift();
+      if (pick !== G.lastTip) { G.lastTip = pick; onMapHover(pick); }
+    }
+    G.next += 1 / P.density;
+  }
+}
+function onMapPlay(pos) {
+  G.pos = pos;
+  if (pos && !G.timer) {
+    ctx();
+    G.next = 0; G.recent = [];
+    G.timer = setInterval(grainTick, 15);
+    grainTick();
+  } else if (!pos && G.timer) {
+    clearInterval(G.timer); G.timer = 0;
+    onMapHover(-1);
+  }
+}
+/* Decode the corpus files in the background so the first grains are not silent. */
+let preloading = false;
+async function preloadCorpusAudio() {
+  if (preloading || !corpus) return;
+  preloading = true;
+  const counts = new Map();
+  for (let i = 0; i < corpus.n; i++) { const p = corpus.its[corpus.item[i]].path; counts.set(p, (counts.get(p) || 0) + 1); }
+  const paths = [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a));
+  for (const p of paths) {
+    if (map.mode !== 'play') break;
+    let total = 0;
+    for (const a of audioMem.values()) total += a.length;
+    if (total > AUDIO_MEM_CAP * 0.9) break;
+    if (!audioMem.has(p)) { try { await decodedAudio(p, true); } catch (e) { /* skip */ } }
+  }
+  preloading = false;
+}
+function setPlayMode(on) {
+  map.setMode(on ? 'play' : 'orbit');
+  const b = $('btnPlay');
+  b.classList.toggle('on', on);
+  b.textContent = on ? '● Playing: drag on the map' : '▶︎ Play the map';
+  onMapHover(-1);
+  if (on) { ctx(); preloadCorpusAudio(); }
 }
 
 /* ── .concat files ─────────────────────────────────────────────────────────── */
@@ -1093,7 +1309,11 @@ function bindSlicing() {
 
 /* ── init ─────────────────────────────────────────────────────────────────── */
 function init() {
-  map = new Map3D($('map'), { onPick: onMapPick, onHover: onMapHover });
+  loadPrefs();
+  map = new Map3D($('map'), { onPick: onMapPick, onHover: onMapHover, onPlay: onMapPlay, radiusPx: () => G.spreadPx });
+  bindMapBar();
+  $('btnHelp').addEventListener('click', () => $('dlgHelp').showModal());
+  $('helpClose').addEventListener('click', () => $('dlgHelp').close());
   $('btnUp').addEventListener('click', () => showLib(dirName(libPath).length < LIB.length ? LIB : dirName(libPath)));
   $('btnNew').addEventListener('click', newCorpus);
   $('btnOpen').addEventListener('click', openDialog);
@@ -1105,7 +1325,7 @@ function init() {
   const tab = (mapOn) => {
     $('tabMap').classList.toggle('on', mapOn); $('tabDesc').classList.toggle('on', !mapOn);
     $('mapWrap').hidden = !mapOn; $('desc').hidden = mapOn;
-    $('btnMoveView').hidden = !mapOn; $('btnOrbit').hidden = !mapOn;
+    $('mapBar').hidden = !mapOn;
     if (mapOn) map.draw();
   };
   $('tabMap').addEventListener('click', () => tab(true));
@@ -1114,7 +1334,7 @@ function init() {
     const r = document.documentElement, dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
     r.dataset.theme = dark ? 'light' : 'dark';
     try { localStorage.setItem('concat-builder-theme', r.dataset.theme); } catch (e) { /* ignore */ }
-    map.draw(); drawWave(); renderDesc();
+    map.refresh(); updateMap(); drawWave(); renderDesc();
   });
   try { const t = localStorage.getItem('concat-builder-theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) { /* ignore */ }
   window.addEventListener('beforeunload', (e) => { if (S.dirty) { e.preventDefault(); e.returnValue = ''; } });
@@ -1129,7 +1349,13 @@ function init() {
     if (mod && e.key === 's') { e.preventDefault(); save(); return; }
     if (e.target.closest('input, textarea, select, dialog')) return;     /* typing: native keys */
     if (mod && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); panel = 'lib'; selectAllLib(); return; }
-    if (e.key === 'Escape') { libSel = new Set(); paintLibSel(); stopAudio(); return; }
+    if (e.key === 'Escape') {
+      libSel = new Set(); paintLibSel(); stopAudio();
+      if (S.sel !== null) { S.sel = null; S.selFile = null; renderSources(); renderEditor(); }
+      return;
+    }
+    if (!mod && (e.key === 'p' || e.key === 'P')) { setPlayMode(map.mode !== 'play'); return; }
+    if (e.key === '?') { $('dlgHelp').showModal(); return; }
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
       const d = e.key === 'ArrowDown' ? 1 : -1;
@@ -1148,7 +1374,9 @@ function init() {
     }
   });
   bindDrop(); bindSlicing(); syncSlicingInputs(); updateTitle();
-  showLib(LIB + '/Samples').catch(() => showLib(LIB));
+  let lp = null;
+  try { lp = localStorage.getItem('concat-builder-lib'); } catch (e) { /* ignore */ }
+  showLib(lp && lp.startsWith(LIB) ? lp : LIB + '/Samples');
   recompute();
   onMapHover(-1);
   restoreDraft();
