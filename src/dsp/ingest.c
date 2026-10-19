@@ -117,13 +117,26 @@ static void scan_audio(const char *dir, char (*paths)[INGEST_PATH], int max, int
 }
 
 int ingest_list_audio(const char *dir, char (*paths)[INGEST_PATH], int max) {
+    return ingest_list_audio_ex(dir, paths, max, 1);
+}
+
+int ingest_list_audio_ex(const char *dir, char (*paths)[INGEST_PATH], int max, int recurse) {
     struct stat st;
     if (max > 0 && stat(dir, &st) == 0 && S_ISREG(st.st_mode)) {
         snprintf(paths[0], INGEST_PATH, "%s", dir);   /* a single FILE is the whole corpus */
         return 1;
     }
     int n = 0;
-    scan_audio(dir, paths, max, &n, 0);
+    if (recurse) { scan_audio(dir, paths, max, &n, 0); return n; }
+    DIR *d = opendir(dir);                            /* top level only */
+    if (!d) return 0;
+    struct dirent *e;
+    while ((e = readdir(d)) && n < max) {
+        if (e->d_name[0] == '.' || !is_audio(e->d_name) || is_dir_entry(dir, e)) continue;
+        snprintf(paths[n], INGEST_PATH, "%s/%s", dir, e->d_name);
+        n++;
+    }
+    closedir(d);
     return n;
 }
 
@@ -257,6 +270,23 @@ int ingest_read(ingest_reader_t *r, float *out, int max_frames) {
         r->opos += r->step;
     }
     return w;
+}
+
+int ingest_seek(ingest_reader_t *r, long long frame) {
+    if (!r || frame < 0) return 0;
+    double spos = (double)frame * r->step;                /* source position of output `frame` */
+    long long from = (r->sr == (unsigned)r->target_sr) ? frame : (long long)spos - 1;   /* Hermite needs i-1 */
+    if (from < 0) from = 0;
+    int ok;
+    switch (r->kind) {
+        case RD_FLAC: ok = drflac_seek_to_pcm_frame(r->flac, (drflac_uint64)from); break;
+        case RD_MP3:  ok = drmp3_seek_to_pcm_frame(&r->mp3, (drmp3_uint64)from); break;
+        default:      ok = drwav_seek_to_pcm_frame(&r->wav, (drwav_uint64)from); break;
+    }
+    if (!ok) return 0;
+    r->mono_n = 0; r->mono_base = from; r->src_read = from; r->eof = 0;
+    r->opos = spos;
+    return 1;
 }
 
 double ingest_duration_s(const ingest_reader_t *r) {

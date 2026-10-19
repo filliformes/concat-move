@@ -28,6 +28,7 @@
 #include <dirent.h>
 #include <sys/resource.h>
 #include <sched.h>
+#include <sys/stat.h>
 
 typedef struct {
     uint32_t api_version;
@@ -223,6 +224,72 @@ int main(int argc, char **argv) {
             A->destroy_instance(in);
         }
         printf("RESTORE saved=[%s]  clobbered %d / %d runs\n", saved, wrong, runs);
+        printf("DONE\n");
+        return 0;
+    }
+
+    /* ===== RELOAD mode: a .concat corpus is edited while it plays (hot reload). ===== */
+    if (argc > 4 && !strcmp(argv[4], "reload")) {
+        const char *T = "/data/UserData/schwung/concat-reload-test";
+        char f1[512], cpath[600], tmp[620], txt[2048];
+        if (!first_audio_in(bigdir, f1, sizeof f1)) { printf("no audio in %s\n", bigdir); return 1; }
+        mkdir(T, 0755);
+        snprintf(cpath, sizeof cpath, "%s/r.concat", T);
+        snprintf(tmp, sizeof tmp, "%s.tmp", cpath);
+#define WRITE_CONCAT(...) do { snprintf(txt, sizeof txt, __VA_ARGS__); FILE *wf = fopen(tmp, "w"); \
+            if (wf) { fputs(txt, wf); fclose(wf); rename(tmp, cpath); } } while (0)
+        WRITE_CONCAT("{\"concat\":1,\"name\":\"R\",\"sources\":[{\"path\":\"%s\",\"start\":0,\"end\":3}]}", f1);
+
+        void *in = A->create_instance(moddir, NULL);
+        SP(in, "src_scope", "Folder");                            /* a .concat must not turn into its folder */
+        SP(in, "corpus_file", cpath);
+        double tr = wait_ready(in, 120);
+        for (int k = 0; k < 40; k++) render(in, 10, 2900);
+        GP(in, "corpus_path"); printf("R1 corpus_path=[%s]\n", GBUF);
+        GP(in, "_dbg"); const char *ns = strstr(GBUF, "nslices="); int n1 = ns ? atoi(ns + 8) : -1;
+        printf("R1 3 s range of one file: ready %.2f s, %d slices\n", tr, n1);
+
+        SP(in, "play_mode", "Map");
+        WRITE_CONCAT("{\"concat\":1,\"name\":\"R\",\"sources\":[{\"path\":\"%s\"}]}", bigdir);
+        phase_begin("R2 edit while playing");
+        double t0 = now_us(), tl = -1; int n2 = n1;
+        while ((now_us() - t0) / 1e6 < 120) {
+            render(in, 10, 2900);
+            GP(in, "_dbg"); ns = strstr(GBUF, "nslices="); n2 = ns ? atoi(ns + 8) : -1;
+            if (n2 != n1 && n2 > 0) { tl = (now_us() - t0) / 1e6; break; }
+        }
+        phase_end();
+        GP(in, "corpus_status");
+        printf("R2 edited to the whole folder: new corpus live after %.2f s, %d slices, status=[%s]\n", tl, n2, GBUF);
+
+        WRITE_CONCAT("{\"concat\":1, \"sources\": [ ");             /* broken save */
+        phase_begin("R3 broken file while playing");
+        for (int k = 0; k < 250; k++) render(in, 10, 2900);        /* ~7 s: two polls + build */
+        phase_end();
+        GP(in, "_dbg"); ns = strstr(GBUF, "nslices="); int n3 = ns ? atoi(ns + 8) : -1;
+        GP(in, "corpus_status");
+        printf("R3 bad JSON: %d slices (expect %d kept), status=[%s]\n", n3, n2, GBUF);
+
+        remove(cpath);
+        for (int k = 0; k < 250; k++) render(in, 10, 2900);
+        GP(in, "_dbg"); ns = strstr(GBUF, "nslices="); int n4 = ns ? atoi(ns + 8) : -1;
+        GP(in, "corpus_status");
+        printf("R4 file deleted: %d slices (expect %d kept), status=[%s]\n", n4, n2, GBUF);
+
+        WRITE_CONCAT("{\"concat\":1,\"name\":\"R\",\"sources\":[{\"path\":\"%s\",\"start\":0,\"end\":3}]}", f1);
+        t0 = now_us(); tl = -1; int n5 = n4;
+        while ((now_us() - t0) / 1e6 < 60) {
+            render(in, 10, 2900);
+            GP(in, "_dbg"); ns = strstr(GBUF, "nslices="); n5 = ns ? atoi(ns + 8) : -1;
+            if (n5 != n4 && n5 > 0) { tl = (now_us() - t0) / 1e6; break; }
+        }
+        GP(in, "corpus_status");
+        printf("R5 restored: live after %.2f s, %d slices (expect %d, from cache), status=[%s]\n", tl, n5, n1, GBUF);
+
+        t0 = now_us(); A->destroy_instance(in);
+        printf("R6 destroy while watching: %.0f us\n", now_us() - t0);
+        remove(cpath); rmdir(T);
+#undef WRITE_CONCAT
         printf("DONE\n");
         return 0;
     }

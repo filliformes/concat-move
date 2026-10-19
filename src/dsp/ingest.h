@@ -31,6 +31,8 @@ int ingest_scan_folders(corpus_folder_t *out, int max);
 /* List absolute paths of audio files inside `dir` (recursive, bounded depth), or the
  * file itself when `dir` is a regular file. Returns count (<= max). */
 int ingest_list_audio(const char *dir, char (*paths)[INGEST_PATH], int max);
+/* Same, with recursion optional (0 = only files directly inside `dir`). */
+int ingest_list_audio_ex(const char *dir, char (*paths)[INGEST_PATH], int max, int recurse);
 
 /* ── Streaming reader ─────────────────────────────────────────────────────── */
 typedef struct ingest_reader ingest_reader_t;
@@ -41,6 +43,10 @@ ingest_reader_t *ingest_open(const char *path, int target_sr);
 /* Read up to max_frames mono frames at the target rate into out.
  * Returns frames written; 0 at end of file. */
 int ingest_read(ingest_reader_t *r, float *out, int max_frames);
+
+/* Position the reader so the next ingest_read returns output (target-rate) frame
+ * `frame`. Returns 0 if the decoder cannot seek there. */
+int ingest_seek(ingest_reader_t *r, long long frame);
 
 /* Source duration in seconds (0 if unknown, e.g. some MP3s). */
 double ingest_duration_s(const ingest_reader_t *r);

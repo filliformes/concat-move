@@ -41,6 +41,7 @@
 #include <pthread.h>
 #include <dlfcn.h>
 #include <time.h>
+#include <errno.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include "ingest.h"
@@ -251,6 +252,9 @@ typedef struct {
     volatile int     building;           /* a build is running: status/progress come from binfo */
     corpus_build_info_t binfo;           /* live report of the current / last build */
     int              refs;               /* inst + analyst; last one out frees (bounded teardown) */
+    corpus_spec_t   *spec;               /* analyst-owned: last resolved sources (hot-reload watch list) */
+    unsigned long long watch_stamp, watch_pending;   /* analyst-only: change detection + debounce */
+    char             spec_err[96];       /* copy of spec->err for the status line */
 
     /* Mosaic mode: live-input descriptor extraction (render thread) */
     const concat_host_t *host;
@@ -384,7 +388,7 @@ static int desc_index(int e) {
 static void set_corpus_path(concat_t *inst) {
     strncpy(inst->corpus_path, inst->corpus_file, sizeof(inst->corpus_path) - 1);
     inst->corpus_path[sizeof(inst->corpus_path) - 1] = 0;
-    if ((int)inst->pv[P_SRC_SCOPE] == 0) {              /* Folder → dirname */
+    if ((int)inst->pv[P_SRC_SCOPE] == 0 && !corpus_is_concat(inst->corpus_path)) {   /* Folder → dirname */
         char *slash = strrchr(inst->corpus_path, '/');
         if (slash && slash != inst->corpus_path) *slash = 0;
     }
@@ -466,11 +470,36 @@ static void *analyst_thread(void *arg) {
     cpu_set_t cs; CPU_ZERO(&cs); CPU_SET(0, &cs); CPU_SET(1, &cs); CPU_SET(2, &cs);
     sched_setaffinity(0, sizeof(cs), &cs);           /* cores 0-2 (core 3 = SPI FIFO 90) */
     concat_cancel_flag = &inst->cancel;              /* long loops in the build poll this */
+    inst->spec = (corpus_spec_t *)calloc(1, sizeof(corpus_spec_t));
 
     for (;;) {
         pthread_mutex_lock(&inst->lock);
-        while (!inst->arm && !inst->auto_pick && !inst->shutdown) pthread_cond_wait(&inst->cond, &inst->lock);
+        int poll = 0;
+        while (!inst->arm && !inst->auto_pick && !inst->shutdown) {
+            /* A .concat corpus is watched: wake every 2 s to stat it and its folders. */
+            if (!inst->spec || !inst->spec->is_concat || inst->spec->nwatch == 0) {
+                pthread_cond_wait(&inst->cond, &inst->lock);
+                continue;
+            }
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_sec += 2;
+            if (pthread_cond_timedwait(&inst->cond, &inst->lock, &ts) == ETIMEDOUT) { poll = 1; break; }
+        }
         if (inst->shutdown) { pthread_mutex_unlock(&inst->lock); break; }
+
+        /* Hot reload: rebuild once a change has held still for one poll (the Corpus
+         * Builder saves via temp file + rename, but a hand edit may land in pieces).
+         * The playing corpus stays live; unchanged files load from the cache. */
+        if (poll) {
+            pthread_mutex_unlock(&inst->lock);
+            unsigned long long st = corpus_watch_stamp(inst->spec);
+            if (st != inst->watch_stamp) {
+                if (st == inst->watch_pending) arm_analyst(inst, 0);
+                else inst->watch_pending = st;
+            }
+            continue;
+        }
 
         /* No saved corpus: discover a default (first file of the first Samples
          * sub-folder) off the SPI path, then arm a normal build on it. */
@@ -511,17 +540,26 @@ static void *analyst_thread(void *arg) {
         }
 
         inst->building = 1;
+        inst->binfo.spec = inst->spec;          /* receives the resolved sources */
         corpus_index_t *ni = corpus_index_build(path, 44100, sm, mn, mx, sg, pool_samples, mem_samples,
                                                 CONCAT_CACHE_DIR, force, &inst->binfo);
         if (ni && (inst->cancel || inst->shutdown)) { corpus_index_free(ni); ni = NULL; }
         if (ni) {                       /* a failed or cancelled build keeps the corpus that is playing */
             build_map_pts(ni);          /* cache the scatter string before publishing (worker, once per load) */
             corpus_index_t *old = __atomic_exchange_n(&inst->index, ni, __ATOMIC_ACQ_REL);
-            if (old) { usleep(60000); corpus_index_free(old); }  /* render flushes on the gen change */
+            if (old) {                  /* render flushes on the gen change; give it 60 ms. After */
+                for (int w = 0; w < 12 && !inst->shutdown; w++) usleep(5000);   /* destroy nothing renders */
+                corpus_index_free(old);
+            }
             inst->binfo.progress = 100;
+        }
+        if (inst->spec) {
+            inst->watch_stamp = inst->watch_pending = inst->binfo.watch_stamp;
+            snprintf(inst->spec_err, sizeof(inst->spec_err), "%s", inst->spec->err);
         }
         inst->building = 0;
     }
+    free(inst->spec);
     drop_ref(inst);
     return NULL;
 }
@@ -776,7 +814,7 @@ static void build_map_pts(corpus_index_t *ix) {
 static int corpus_status(concat_t *inst, char *buf, int buf_len) {
     const corpus_build_info_t *b = &inst->binfo;
     int have = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE) != NULL;
-    if (inst->building) {
+    if (inst->building && b->phase != CB_DONE) {
         switch (b->phase) {
             case CB_LOAD:    return snprintf(buf, buf_len, "loading cache");
             case CB_ANALYSE: return snprintf(buf, buf_len, "analysing %d/%d", b->files_done, b->files_total);
@@ -791,10 +829,12 @@ static int corpus_status(concat_t *inst, char *buf, int buf_len) {
         case CB_ERR_NOAUDIO: e = "can't decode files"; break;
         case CB_ERR_GATED:   e = "all silent"; break;
         case CB_ERR_MEM:     e = "out of memory"; break;
+        case CB_ERR_SPEC:    e = inst->spec_err[0] ? inst->spec_err : "bad corpus file"; break;
         default: break;                                  /* OK, or cancelled by a newer pick */
     }
     if (e) return snprintf(buf, buf_len, "%s%s", e, have ? ", kept old" : "");
     if (have && b->mem_limited) return snprintf(buf, buf_len, "low RAM: %d slices", b->nslices);
+    if (have && b->sources_missing) return snprintf(buf, buf_len, "%d sources missing", b->sources_missing);
     if (have && b->files_failed) return snprintf(buf, buf_len, "%d files unreadable", b->files_failed);
     if (buf_len > 0) buf[0] = 0;
     return 0;
@@ -815,7 +855,7 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
         int n = 0;
 #define CP_EMIT(...) do { if (n < buf_len) n += snprintf(buf + n, buf_len - n, __VA_ARGS__); } while (0)
         CP_EMIT("[{\"key\":\"corpus_file\",\"name\":\"Source\",\"type\":\"filepath\","
-                "\"root\":\"/data/UserData/UserLibrary\",\"filter\":[\".wav\",\".aif\",\".aiff\",\".flac\",\".mp3\"]}");
+                "\"root\":\"/data/UserData/UserLibrary\",\"filter\":[\".wav\",\".aif\",\".aiff\",\".flac\",\".mp3\",\".concat\"]}");
         /* Corpus map as a 1.3.0 as_page: a normal knob page carrying a drawer, so
          * the encoders drive the level's knobs and pads reach the DSP. extra_keys
          * puts map_live + map_pts in the host's per-frame read rotation → drawPage

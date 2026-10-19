@@ -41,6 +41,22 @@ per-file descriptor cache with audio re-read on load, and the web tool first.
 Prerequisite: Phase 0 (cancellable build, bounded teardown, status line). Hot reload
 without it can freeze the Move exactly like the module-switch bug.
 
+**Status (2026-10-19): items 1-4 implemented** (`json.c`, `corpus_file.c`, per-file cache
+in `corpus_engine.c`, watch loop in `concat.c`). Item 5 (per-slice source index) waits for
+the builder, which computes its own. Notes from implementation and device tests:
+
+- `descriptors.use` zeroes the unused columns after RobustScaling, so search, k-means and
+  PCA ignore them with no other change. A raw X/Y axis set to an unused descriptor goes flat.
+- Per-file cache: `<cache_dir>/files/<hash>.cfd`, keyed by path + range + slicing params,
+  validated by mtime + size. It records slice boundaries per 60 s window and descriptors as
+  they are computed, so a memory-capped or cancelled build still saves its progress.
+- Hot reload polls every 2 s and rebuilds once a change holds still for one poll. The
+  baseline stamp is taken when the sources are read (ns mtime), so a save during a build
+  is not missed. Device: editing a 9170-slice `.concat` goes live in 8.6 s with the
+  per-file cache (75.8 s cold); a broken save keeps the old corpus with "bad JSON: ...,
+  kept old" on the status line.
+- No cache eviction yet: on the test Move the cache dir is 352 MB.
+
 ## 3. Corpus Builder web tool
 
 ### Transport: no new server needed

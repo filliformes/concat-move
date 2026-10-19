@@ -264,7 +264,8 @@
           ".aif",
           ".aiff",
           ".flac",
-          ".mp3"
+          ".mp3",
+          ".concat"
         ],
         "default": ""
       },

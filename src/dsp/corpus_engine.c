@@ -86,24 +86,31 @@ long corpus_mem_available_mb(void) {
     return kb / 1024;
 }
 
-/* Order-independent content signature: XOR of per-file (path+mtime+size) hashes,
- * mixed with the slicing params. Returns 0 (→ "no signature") if any stat fails. */
-static uint64_t corpus_signature(char (*paths)[INGEST_PATH], int nfiles,
+/* Order-independent content signature: XOR of per-item (path+mtime+size) hashes,
+ * mixed with the slicing params. A trimmed range and a descriptor mask only enter
+ * the hash when set, so plain folders keep their existing cache. Returns 0
+ * (-> "no signature") if any stat fails. */
+static uint64_t corpus_signature(const corpus_item_t *items, int nitems, const corpus_spec_t *spec,
                                  int slice_mode, int min_len, int max_len, float sil_gate, int sr) {
     uint64_t x = 0;
-    for (int f = 0; f < nfiles; f++) {
+    for (int f = 0; f < nitems; f++) {
         struct stat st;
-        if (stat(paths[f], &st) != 0) return 0;
-        uint64_t h = fnv1a(0xcbf29ce484222325ULL, paths[f], (int)strlen(paths[f]));
+        if (stat(items[f].path, &st) != 0) return 0;
+        uint64_t h = fnv1a(0xcbf29ce484222325ULL, items[f].path, (int)strlen(items[f].path));
         long mt = (long)st.st_mtime, sz = (long)st.st_size;
         h = fnv1a(h, &mt, sizeof(mt));
         h = fnv1a(h, &sz, sizeof(sz));
+        if (items[f].start_s > 0.0 || items[f].end_s > 0.0) {
+            double rg[2] = { items[f].start_s, items[f].end_s };
+            h = fnv1a(h, rg, sizeof(rg));
+        }
         x ^= h;
     }
     int parms[4] = { slice_mode, min_len, max_len, sr };
     uint64_t s = fnv1a(0xcbf29ce484222325ULL, &x, sizeof(x));
     s = fnv1a(s, parms, sizeof(parms));
     s = fnv1a(s, &sil_gate, sizeof(sil_gate));
+    if (spec && spec->has_mask) s = fnv1a(s, spec->mask, sizeof(spec->mask));
     return s ? s : 1;   /* never 0 (reserved) */
 }
 
@@ -399,40 +406,141 @@ static void corpus_write_scatter_bmp(corpus_index_t *ix, const char *cache_dir, 
 #define WIN_SECONDS    60     /* streamed decode window (10.6 MB of floats at 44.1k) */
 #define MEM_FLOOR_MB   150    /* stop adding files if free RAM drops below this mid-build */
 
+/* ── Per-file descriptor cache ───────────────────────────────────────────────
+ * One small file per (audio file, range, slicing params) under <cache_dir>/files/,
+ * holding the slice boundaries and the raw (unscaled) descriptors computed so far.
+ * When a corpus changes, the whole-index cache misses, but unchanged files skip
+ * slicing and descriptors (the costly part: YIN) and only re-read their audio.
+ * Validated by the audio file's mtime + size. Slices the pool decimated away have
+ * no descriptor yet; they are computed if a later build keeps them. */
+#define PFC_MAGIC 0x31444643u   /* "CFD1" */
+#define PFC_VER   1u
+
+typedef struct { int start, len; } pfc_slice_t;   /* start: output frame from the range start */
+typedef struct {
+    int          n, cap;
+    long long    covered;      /* frames sliced so far (whole windows from the range start) */
+    pfc_slice_t *sl;
+    float       *desc;         /* [cap*NDESC] raw descriptors */
+    uint8_t     *has;          /* descriptor computed? */
+    int          dirty;
+} pfc_t;
+
+static void pfc_free(pfc_t *p) { free(p->sl); free(p->desc); free(p->has); memset(p, 0, sizeof(*p)); }
+
+static int pfc_grow(pfc_t *p, int need) {
+    if (need <= p->cap) return 1;
+    int nc = p->cap ? p->cap : 256;
+    while (nc < need) nc *= 2;
+    pfc_slice_t *s = (pfc_slice_t *)realloc(p->sl, sizeof(pfc_slice_t) * (size_t)nc);
+    if (!s) return 0;
+    p->sl = s;
+    float *d = (float *)realloc(p->desc, sizeof(float) * NDESC * (size_t)nc);
+    if (!d) return 0;
+    p->desc = d;
+    uint8_t *h = (uint8_t *)realloc(p->has, (size_t)nc);
+    if (!h) return 0;
+    p->has = h;
+    p->cap = nc;
+    return 1;
+}
+
+static void pfc_path(char *out, int outsz, const char *cache_dir, const corpus_item_t *it,
+                     int slice_mode, int min_len, int max_len, float sil_gate, int sr) {
+    uint64_t h = fnv1a(0xcbf29ce484222325ULL, it->path, (int)strlen(it->path));
+    double rg[2] = { it->start_s, it->end_s };
+    int parms[5] = { slice_mode, min_len, max_len, sr, WIN_SECONDS };
+    h = fnv1a(h, rg, sizeof(rg));
+    h = fnv1a(h, parms, sizeof(parms));
+    h = fnv1a(h, &sil_gate, sizeof(sil_gate));
+    snprintf(out, outsz, "%s/files/%016llx.cfd", cache_dir, (unsigned long long)h);
+}
+
+static int pfc_load(pfc_t *p, const char *path, const struct stat *ast) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return 0;
+    uint32_t hdr[2]; long long meta[3]; int n = 0;
+    int ok = fread(hdr, sizeof(hdr), 1, fp) == 1 && hdr[0] == PFC_MAGIC && hdr[1] == PFC_VER
+          && fread(meta, sizeof(meta), 1, fp) == 1
+          && meta[0] == (long long)ast->st_mtime && meta[1] == (long long)ast->st_size
+          && fread(&n, sizeof(n), 1, fp) == 1 && n >= 0 && n < (1 << 22) && pfc_grow(p, n > 0 ? n : 1);
+    if (ok && n > 0)
+        ok = fread(p->sl, sizeof(pfc_slice_t), (size_t)n, fp) == (size_t)n
+          && fread(p->has, 1, (size_t)n, fp) == (size_t)n
+          && fread(p->desc, sizeof(float) * NDESC, (size_t)n, fp) == (size_t)n;
+    fclose(fp);
+    if (!ok) { pfc_free(p); return 0; }
+    p->n = n; p->covered = meta[2]; p->dirty = 0;
+    for (int i = 0; i < n; i++)
+        if (p->sl[i].start < 0 || p->sl[i].len < 1) { pfc_free(p); return 0; }
+    return 1;
+}
+
+static void pfc_store(const pfc_t *p, const char *path, const char *cache_dir, const struct stat *ast) {
+    char dir[600], tmp[700];
+    snprintf(dir, sizeof(dir), "%s/files", cache_dir);
+    mkdir(dir, 0755);                                   /* fine if it exists */
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE *fp = fopen(tmp, "wb");
+    if (!fp) return;
+    uint32_t hdr[2] = { PFC_MAGIC, PFC_VER };
+    long long meta[3] = { (long long)ast->st_mtime, (long long)ast->st_size, p->covered };
+    int ok = fwrite(hdr, sizeof(hdr), 1, fp) == 1 && fwrite(meta, sizeof(meta), 1, fp) == 1
+          && fwrite(&p->n, sizeof(p->n), 1, fp) == 1;
+    if (ok && p->n > 0)
+        ok = fwrite(p->sl, sizeof(pfc_slice_t), (size_t)p->n, fp) == (size_t)p->n
+          && fwrite(p->has, 1, (size_t)p->n, fp) == (size_t)p->n
+          && fwrite(p->desc, sizeof(float) * NDESC, (size_t)p->n, fp) == (size_t)p->n;
+    if (fclose(fp) != 0) ok = 0;
+    if (ok) rename(tmp, path); else remove(tmp);
+}
+
 corpus_index_t *corpus_index_build(const char *folder, int sr,
                                    int slice_mode, int min_len, int max_len,
                                    float sil_gate, int pool_cap_samples, int mem_cap_samples,
                                    const char *cache_dir, int force_rescan,
                                    corpus_build_info_t *info) {
     corpus_build_info_t local;
+    corpus_spec_t *spec_out = info ? info->spec : NULL;
     if (!info) info = &local;
     memset((void *)info, 0, sizeof(*info));
+    info->spec = spec_out;
     info->phase = CB_SCAN;
 
     int cap = pool_cap_samples;
     if (mem_cap_samples > 0 && mem_cap_samples < cap) { cap = mem_cap_samples; info->mem_limited = 1; }
     if (cap < 1) cap = 1;
 
-    char (*paths)[INGEST_PATH] = (char (*)[INGEST_PATH])malloc(sizeof(char[INGEST_PATH]) * MAX_FILES);
-    if (!paths) { info->err = CB_ERR_MEM; return NULL; }
-    int nfiles = ingest_list_audio(folder, paths, MAX_FILES);
-    if (nfiles <= 0) { free(paths); info->err = CB_ERR_NOFILES; return NULL; }
+    corpus_item_t *items = (corpus_item_t *)malloc(sizeof(corpus_item_t) * MAX_FILES);
+    if (!items) { info->err = CB_ERR_MEM; return NULL; }
+    corpus_spec_t spec;                                          /* ~17 KB: analyst stack is 8 MB */
+    int nfiles = corpus_resolve(folder, &spec, items, MAX_FILES);
+    info->watch_stamp = corpus_watch_stamp(&spec);
+    if (spec_out) *spec_out = spec;
+    info->sources_missing = spec.sources_missing;
+    if (nfiles < 0)  { free(items); info->err = CB_ERR_SPEC; return NULL; }
+    if (nfiles == 0) { free(items); info->err = CB_ERR_NOFILES; return NULL; }
     info->files_total = nfiles;
+    if (spec.has_slicing) {                                      /* the .concat file's slicing wins */
+        slice_mode = spec.slice_mode;
+        min_len = (int)((long)spec.min_ms * sr / 1000);
+        max_len = (int)((long)spec.max_ms * sr / 1000);
+    }
 
     /* Fast path: an on-disk cache whose signature still matches -> load, skip analysis.
      * It is valid up to the user's Pool Cap; it is only refused if free RAM can't hold it. */
-    uint64_t sig = cache_dir ? corpus_signature(paths, nfiles, slice_mode, min_len, max_len, sil_gate, sr) : 0;
+    uint64_t sig = cache_dir ? corpus_signature(items, nfiles, &spec, slice_mode, min_len, max_len, sil_gate, sr) : 0;
     if (cache_dir && sig && !force_rescan) {
         info->phase = CB_LOAD;
         corpus_index_t *hit = cache_load(cache_dir, folder, sig, pool_cap_samples, mem_cap_samples);
         if (hit) {
             corpus_write_scatter_bmp(hit, cache_dir, folder);   /* regenerate scatter image (cheap) */
-            free(paths);
+            free(items);
             info->from_cache = 1; info->mem_limited = 0; info->nslices = hit->nslices;
             info->files_done = nfiles; info->progress = 95; info->phase = CB_DONE;
             return hit;
         }
-        if (concat_cancelled()) { free(paths); info->err = CB_ERR_CANCEL; return NULL; }
+        if (concat_cancelled()) { free(items); info->err = CB_ERR_CANCEL; return NULL; }
     }
 
     info->phase = CB_ANALYSE;
@@ -442,7 +550,7 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
     int win_cap = sr * WIN_SECONDS;
     float *win = (float *)malloc(sizeof(float) * (size_t)win_cap);
     if (!a || !ix || !ranges || !win) {
-        free(paths); free(ranges); free(win); analysis_destroy(a); free(ix);
+        free(items); free(ranges); free(win); analysis_destroy(a); free(ix);
         info->err = CB_ERR_MEM; return NULL;
     }
 
@@ -452,7 +560,7 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
     ix->slices = (cslice_t *)malloc(sizeof(cslice_t) * scap);
     float *raw = (float *)malloc(sizeof(float) * NDESC * scap);
     if (!ix->pool || !ix->slices || !raw) {
-        free(paths); free(ranges); free(win); free(raw); analysis_destroy(a);
+        free(items); free(ranges); free(win); free(raw); analysis_destroy(a);
         corpus_index_free(ix); info->err = CB_ERR_MEM; return NULL;
     }
 
@@ -463,8 +571,9 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
      * The stride starts from a file-size estimate so it is right from the first slice. */
     double est_samples = 0.0;
     for (int f = 0; f < nfiles; f++) {
-        struct stat est; if (stat(paths[f], &est) != 0) continue;
-        const char *e = strrchr(paths[f], '.');
+        if (items[f].end_s > items[f].start_s) { est_samples += (items[f].end_s - items[f].start_s) * sr; continue; }
+        struct stat est; if (stat(items[f].path, &est) != 0) continue;
+        const char *e = strrchr(items[f].path, '.');
         double factor = 0.25;                                    /* wav/aiff 16-bit stereo: 4 B/sample */
         if (e && !strcasecmp(e, ".flac")) factor = 0.5;          /* ~2:1 */
         else if (e && !strcasecmp(e, ".mp3")) factor = 2.75;     /* ~10:1 */
@@ -484,16 +593,63 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
         long av = corpus_mem_available_mb();
         if (av > 0 && av < MEM_FLOOR_MB) { info->mem_limited = 1; info->files_skipped = nfiles - f; break; }
 
-        ingest_reader_t *rd = ingest_open(paths[f], sr);
+        ingest_reader_t *rd = ingest_open(items[f].path, sr);
         if (!rd) { info->files_failed++; info->files_done = f + 1; continue; }
         decoded_any = 1;
+        pfc_t pfc; memset(&pfc, 0, sizeof(pfc));
+        char pfc_file[640]; struct stat ast;
+        int use_pfc = cache_dir && stat(items[f].path, &ast) == 0;
+        if (use_pfc) {
+            pfc_path(pfc_file, sizeof(pfc_file), cache_dir, &items[f], slice_mode, min_len, max_len, sil_gate, sr);
+            if (!force_rescan && pfc_load(&pfc, pfc_file, &ast)) info->files_cached++;
+        }
+        long long win_base = 0;                                  /* frames from the range start */
+        int pfc_cursor = 0;
+        long long remain = -1;                                   /* frames left in a trimmed range */
+        if (items[f].start_s > 0.0) {
+            long long st = (long long)(items[f].start_s * sr);
+            if (!ingest_seek(rd, st))                            /* decoder can't seek: read past it */
+                while (st > 0 && !concat_cancelled()) {
+                    int got = ingest_read(rd, win, st < win_cap ? (int)st : win_cap);
+                    if (got <= 0) break;
+                    st -= got;
+                }
+        }
+        if (items[f].end_s > items[f].start_s) remain = (long long)((items[f].end_s - items[f].start_s) * sr);
         for (;;) {                                               /* one window at a time */
             if (concat_cancelled()) { stop = 1; break; }
-            int len = ingest_read(rd, win, win_cap);
+            int want = win_cap;
+            if (remain >= 0 && remain < want) want = (int)remain;
+            if (want <= 0) break;
+            int len = ingest_read(rd, win, want);
             if (len <= 0) break;
-            int nr = (slice_mode == 1)
-                ? concat_fixed_slice(a, win, len, max_len, sil_gate, ranges, MAX_SLICES_FILE)
-                : concat_onset_slice(a, win, len, min_len, max_len, sil_gate, ranges, MAX_SLICES_FILE);
+            if (remain >= 0) remain -= len;
+            int nr = 0, pidx_base = 0;
+            if (win_base + len <= pfc.covered) {                 /* sliced before: boundaries from the cache */
+                while (pfc_cursor < pfc.n && pfc.sl[pfc_cursor].start < win_base) pfc_cursor++;
+                pidx_base = pfc_cursor;
+                while (pfc_cursor < pfc.n && pfc.sl[pfc_cursor].start < win_base + len && nr < MAX_SLICES_FILE) {
+                    ranges[nr].start = (int)(pfc.sl[pfc_cursor].start - win_base);
+                    ranges[nr].len = pfc.sl[pfc_cursor].len;
+                    if (ranges[nr].start + ranges[nr].len > len) ranges[nr].len = len - ranges[nr].start;
+                    nr++; pfc_cursor++;
+                }
+            } else {
+                nr = (slice_mode == 1)
+                    ? concat_fixed_slice(a, win, len, max_len, sil_gate, ranges, MAX_SLICES_FILE)
+                    : concat_onset_slice(a, win, len, min_len, max_len, sil_gate, ranges, MAX_SLICES_FILE);
+                if (concat_cancelled()) { stop = 1; break; }     /* the slicer bails out early on cancel */
+                pidx_base = pfc.n;
+                if (use_pfc && pfc_grow(&pfc, pfc.n + nr + 1)) {  /* record this window's boundaries */
+                    for (int r = 0; r < nr; r++) {
+                        pfc.sl[pfc.n + r].start = (int)(win_base + ranges[r].start);
+                        pfc.sl[pfc.n + r].len = ranges[r].len;
+                        pfc.has[pfc.n + r] = 0;
+                    }
+                    pfc.n += nr; pfc.covered = win_base + len; pfc.dirty = 1;
+                    pfc_cursor = pfc.n;
+                } else use_pfc = 0;
+            }
             for (int s = 0; s < nr && !stop; s++) {
                 if (concat_cancelled()) { stop = 1; break; }   /* per slice: YIN makes each one costly */
                 long pf = (long)ix->pool_len * 100 / (ix->pool_cap > 0 ? ix->pool_cap : 1);   /* % full */
@@ -520,19 +676,32 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
                 }
                 ix->slices[ix->nslices].pool_off = off;
                 ix->slices[ix->nslices].len = slen;
-                concat_slice_descriptor(a, src, slen, &raw[(size_t)ix->nslices * NDESC]);
+                float *dst = &raw[(size_t)ix->nslices * NDESC];
+                int pi = pidx_base + s;
+                if (use_pfc && pi < pfc.n && pfc.has[pi] && ranges[s].len == pfc.sl[pi].len) {
+                    memcpy(dst, &pfc.desc[(size_t)pi * NDESC], sizeof(float) * NDESC);
+                } else {
+                    concat_slice_descriptor(a, src, slen, dst);
+                    if (use_pfc && pi < pfc.n) {
+                        memcpy(&pfc.desc[(size_t)pi * NDESC], dst, sizeof(float) * NDESC);
+                        pfc.has[pi] = 1; pfc.dirty = 1;
+                    }
+                }
                 ix->slices[ix->nslices].pitch = raw[(size_t)ix->nslices * NDESC + D_PITCH];  /* for Notes retune */
                 ix->nslices++;
                 ix->pool_len += slen;
             }
+            win_base += len;
             if (ix->pool_len >= (long)ix->pool_cap * 98 / 100) break;
         }
         ingest_close(rd);
+        if (use_pfc && pfc.dirty) pfc_store(&pfc, pfc_file, cache_dir, &ast);   /* partial progress counts too */
+        pfc_free(&pfc);
         info->files_done = f + 1;
         info->progress = (int)((long)(f + 1) * 90 / nfiles);
     }
 
-    free(paths); free(ranges); free(win); analysis_destroy(a);
+    free(items); free(ranges); free(win); analysis_destroy(a);
 
     if (concat_cancelled()) { free(raw); corpus_index_free(ix); info->err = CB_ERR_CANCEL; return NULL; }
     if (ix->nslices == 0) {
@@ -548,6 +717,10 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
     for (int i = 0; i < ix->nslices; i++)
         concat_robust_apply(&raw[(size_t)i * NDESC], ix->median, ix->iqr, &ix->qn[(size_t)i * NDESC]);
     free(raw);
+    if (spec.has_mask)                                              /* unused descriptors: a zero column */
+        for (int i = 0; i < ix->nslices; i++)                       /* drops out of every distance, k-means */
+            for (int d = 0; d < NDESC; d++)                         /* and PCA with no other change */
+                if (spec.mask[d] == 0.0f) ix->qn[(size_t)i * NDESC + d] = 0.0f;
 
     query_init(&ix->query, ix->qn, ix->nslices);
     corpus_kmeans(ix);                                              /* pad-jump cluster centroids */

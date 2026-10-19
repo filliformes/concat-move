@@ -8,7 +8,7 @@ MOVE_HOST="${MOVE_HOST:-move.local}"
 REMOTE_DIR="/data/UserData/concat_test"
 
 # Kernel sources every test links against (exclude concat.c — it's the plugin entry).
-SRCS="/build/src/dsp/analysis.c /build/src/dsp/corpus.c /build/src/dsp/query.c /build/src/dsp/ingest.c /build/src/dsp/corpus_engine.c /build/src/dsp/grain.c"
+SRCS="/build/src/dsp/analysis.c /build/src/dsp/corpus.c /build/src/dsp/query.c /build/src/dsp/ingest.c /build/src/dsp/corpus_engine.c /build/src/dsp/grain.c /build/src/dsp/json.c /build/src/dsp/corpus_file.c"
 
 docker build -t schwung-concat-builder "$SCRIPT_DIR" >/dev/null
 mkdir -p "$ROOT/dist"

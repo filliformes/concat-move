@@ -13,6 +13,7 @@
 #include "analysis.h"
 #include "corpus.h"
 #include "query.h"
+#include "corpus_file.h"
 
 typedef struct { int pool_off; int len; float pitch; } cslice_t;  /* pool location + raw pitch (Hz, 0=unvoiced) */
 
@@ -44,7 +45,7 @@ typedef struct {
  * Filled by corpus_index_build so the UI can say what happened. Fields marked
  * volatile are updated live while the build runs (read by other threads). */
 enum { CB_IDLE = 0, CB_SCAN, CB_LOAD, CB_ANALYSE, CB_FINAL, CB_SAVE, CB_DONE };
-enum { CB_OK = 0, CB_ERR_NOFILES, CB_ERR_NOAUDIO, CB_ERR_GATED, CB_ERR_MEM, CB_ERR_CANCEL };
+enum { CB_OK = 0, CB_ERR_NOFILES, CB_ERR_NOAUDIO, CB_ERR_GATED, CB_ERR_MEM, CB_ERR_CANCEL, CB_ERR_SPEC };
 typedef struct {
     volatile int phase;          /* CB_* */
     volatile int files_total;
@@ -56,9 +57,17 @@ typedef struct {
     int from_cache;              /* 1 = loaded from the disk cache */
     int mem_limited;             /* pool was capped below the user's Pool Cap by free RAM */
     int err;                     /* CB_ERR_* when NULL is returned */
+    int sources_missing;         /* .concat sources that did not resolve */
+    int files_cached;            /* files whose slices/descriptors came from the per-file cache */
+    unsigned long long watch_stamp;   /* corpus_watch_stamp() taken right after the sources
+                                       * were read: a later edit always differs from it */
+    corpus_spec_t *spec;         /* optional, caller-owned: receives the resolved spec (name,
+                                  * slicing/mask overrides, watch list, parse error). Kept
+                                  * across the reset at the start of a build. */
 } corpus_build_info_t;
 
-/* Build an index+pool from every audio file in `folder` (or the single file `folder`).
+/* Build an index+pool from every audio file in `folder`, the single file `folder`, or the
+ * sources of the .concat file `folder` (see corpus_file.h; its slicing overrides the args).
  *   slice_mode: 0 = onset, 1 = fixed-grain (grain length = max_len).
  *   min_len/max_len: slice clamps in samples. sil_gate: RMS floor.
  *   pool_cap_samples: the user's pool cap. A cached index is valid up to this size.
