@@ -261,6 +261,8 @@
         "root": "/data/UserData/UserLibrary",
         "filter": [
           ".wav",
+          ".aif",
+          ".aiff",
           ".flac",
           ".mp3"
         ],
@@ -275,7 +277,8 @@
         "show_value": false,
         "extra_keys": [
           "map_live",
-          "map_pts"
+          "map_pts",
+          "corpus_status"
         ],
         "preset_browser": true
       },
@@ -288,6 +291,12 @@
       {
         "key": "map_pts",
         "name": "Pts",
+        "type": "string",
+        "access": "read"
+      },
+      {
+        "key": "corpus_status",
+        "name": "Status",
         "type": "string",
         "access": "read"
       },
@@ -327,7 +336,7 @@
         "type": "int",
         "min": 16,
         "max": 512,
-        "default": 512,
+        "default": 128,
         "unit": "MB"
       },
       {

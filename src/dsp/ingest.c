@@ -2,6 +2,7 @@
  * Concat — audio ingest (clean-room MIT). See ingest.h. Offline only.
  */
 #include "ingest.h"
+#include "corpus.h"     /* concat_cancelled */
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -35,11 +36,13 @@ static const char *ROOTS[] = {
 };
 #define NROOTS ((int)(sizeof(ROOTS) / sizeof(ROOTS[0])))
 
-static int is_audio(const char *name) {
+int ingest_is_audio(const char *name) {
     const char *e = strrchr(name, '.');
     if (!e) return 0;
-    return !strcasecmp(e, ".wav") || !strcasecmp(e, ".flac") || !strcasecmp(e, ".mp3");
+    return !strcasecmp(e, ".wav") || !strcasecmp(e, ".flac") || !strcasecmp(e, ".mp3") ||
+           !strcasecmp(e, ".aif") || !strcasecmp(e, ".aiff");          /* AIFF via dr_wav */
 }
+#define is_audio ingest_is_audio
 
 static int is_dir_entry(const char *parent, struct dirent *e) {
 #ifdef DT_DIR
@@ -124,76 +127,171 @@ int ingest_list_audio(const char *dir, char (*paths)[INGEST_PATH], int max) {
     return n;
 }
 
-/* Cubic Hermite resample of a mono buffer. */
-static float *resample_mono(const float *in, int in_len, int in_sr, int out_sr, int *out_len) {
-    if (in_len <= 0) { *out_len = 0; return NULL; }
-    if (in_sr == out_sr) {
-        float *o = (float *)malloc((size_t)in_len * sizeof(float));
-        if (o) memcpy(o, in, (size_t)in_len * sizeof(float));
-        *out_len = o ? in_len : 0; return o;
+
+
+/* ── Streaming reader ─────────────────────────────────────────────────────────
+ * Decodes CHUNK source frames at a time, downmixes to mono, and resamples to the
+ * target rate with a stateful cubic Hermite (same kernel as the old whole-buffer
+ * resampler, so descriptors and cache signatures are unchanged in practice).
+ * Memory is O(chunk), independent of file length. */
+
+#define RD_CHUNK 4096
+
+enum { RD_WAV = 0, RD_FLAC = 1, RD_MP3 = 2 };
+
+struct ingest_reader {
+    int        kind;
+    drwav      wav;
+    drflac    *flac;
+    drmp3      mp3;
+    unsigned   ch, sr;
+    unsigned long long total;    /* source frames, 0 = unknown */
+    int        target_sr;
+    double     step;             /* source frames per output frame */
+    float     *ibuf;             /* interleaved decode chunk [RD_CHUNK * ch] */
+    float     *mono;             /* mono source window */
+    int        mono_cap, mono_n;
+    long long  mono_base;        /* absolute source index of mono[0] */
+    long long  src_read;         /* source frames decoded so far */
+    double     opos;             /* absolute source position of the next output frame */
+    int        eof;
+};
+
+static unsigned long long rd_decode(ingest_reader_t *r, float *buf, unsigned long long n) {
+    switch (r->kind) {
+        case RD_FLAC: return drflac_read_pcm_frames_f32(r->flac, n, buf);
+        case RD_MP3:  return drmp3_read_pcm_frames_f32(&r->mp3, n, buf);
+        default:      return drwav_read_pcm_frames_f32(&r->wav, n, buf);
     }
-    double ratio = (double)out_sr / in_sr;
-    double nd = (double)in_len * ratio;
-    if (nd > 2.0e9) nd = 2.0e9;         /* guard the int cast against overflow */
-    int n = (int)nd;
-    if (n < 1) n = 1;
-    float *o = (float *)malloc((size_t)n * sizeof(float));
-    if (!o) { *out_len = 0; return NULL; }
-    for (int i = 0; i < n; i++) {
-        double sp = i / ratio;
-        int idx = (int)sp; double fr = sp - idx;
-        float y0 = in[idx > 0 ? idx - 1 : 0];
-        float y1 = in[idx < in_len ? idx : in_len - 1];
-        float y2 = in[idx + 1 < in_len ? idx + 1 : in_len - 1];
-        float y3 = in[idx + 2 < in_len ? idx + 2 : in_len - 1];
-        float c0 = y1;
+}
+
+/* Drop source samples before `keep_from` (absolute), then decode one chunk. */
+static void rd_refill(ingest_reader_t *r, long long keep_from) {
+    if (keep_from > r->mono_base) {
+        long long drop = keep_from - r->mono_base;
+        if (drop > r->mono_n) drop = r->mono_n;
+        memmove(r->mono, r->mono + drop, sizeof(float) * (size_t)(r->mono_n - drop));
+        r->mono_n -= (int)drop;
+        r->mono_base += drop;
+    }
+    int room = r->mono_cap - r->mono_n;
+    if (room > RD_CHUNK) room = RD_CHUNK;
+    if (room <= 0 || r->eof) return;
+    unsigned long long got = rd_decode(r, r->ibuf, (unsigned long long)room);
+    if (got == 0) { r->eof = 1; return; }
+    float inv = 1.0f / (float)r->ch;
+    for (unsigned long long i = 0; i < got; i++) {
+        float s = 0.0f;
+        for (unsigned c = 0; c < r->ch; c++) s += r->ibuf[i * r->ch + c];
+        r->mono[r->mono_n + (int)i] = s * inv;
+    }
+    r->mono_n += (int)got;
+    r->src_read += (long long)got;
+}
+
+ingest_reader_t *ingest_open(const char *path, int target_sr) {
+    if (!path || target_sr <= 0) return NULL;
+    ingest_reader_t *r = (ingest_reader_t *)calloc(1, sizeof(*r));
+    if (!r) return NULL;
+    const char *ext = strrchr(path, '.');
+    int ok = 0;
+    if (ext && !strcasecmp(ext, ".flac")) {
+        r->flac = drflac_open_file(path, NULL);
+        if (r->flac) { ok = 1; r->kind = RD_FLAC; r->ch = r->flac->channels; r->sr = r->flac->sampleRate;
+                       r->total = r->flac->totalPCMFrameCount; }
+    } else if (ext && !strcasecmp(ext, ".mp3")) {
+        if (drmp3_init_file(&r->mp3, path, NULL)) {
+            ok = 1; r->kind = RD_MP3; r->ch = r->mp3.channels; r->sr = r->mp3.sampleRate; r->total = 0;
+        }
+    }
+    if (!ok && drwav_init_file(&r->wav, path, NULL)) {      /* WAV, AIFF, RF64, W64; fallback for odd extensions */
+        ok = 1; r->kind = RD_WAV; r->ch = r->wav.channels; r->sr = r->wav.sampleRate;
+        r->total = r->wav.totalPCMFrameCount;
+    }
+    if (!ok || r->ch == 0 || r->ch > 32 || r->sr == 0) { if (ok) ingest_close(r); else free(r); return NULL; }
+
+    r->target_sr = target_sr;
+    r->step = (double)r->sr / (double)target_sr;
+    r->mono_cap = RD_CHUNK + 8;
+    r->ibuf = (float *)malloc(sizeof(float) * (size_t)RD_CHUNK * r->ch);
+    r->mono = (float *)malloc(sizeof(float) * (size_t)r->mono_cap);
+    if (!r->ibuf || !r->mono) { ingest_close(r); return NULL; }
+    return r;
+}
+
+int ingest_read(ingest_reader_t *r, float *out, int max_frames) {
+    if (!r || max_frames <= 0) return 0;
+    int w = 0;
+    if (r->sr == (unsigned)r->target_sr) {                  /* same rate: plain copy-through */
+        while (w < max_frames) {
+            if (r->mono_n == 0) { if (r->eof || concat_cancelled()) break; rd_refill(r, r->mono_base); continue; }
+            int n = r->mono_n < max_frames - w ? r->mono_n : max_frames - w;
+            memcpy(out + w, r->mono, sizeof(float) * (size_t)n);
+            w += n;
+            rd_refill(r, r->mono_base + n);                  /* drops consumed; refills only if empty-ish */
+        }
+        return w;
+    }
+    while (w < max_frames) {
+        long long idx = (long long)r->opos;
+        if (!r->eof && idx + 2 >= r->mono_base + r->mono_n) {
+            if (concat_cancelled()) break;                     /* per 4096-frame refill */
+            rd_refill(r, idx - 1); continue;
+        }
+        if (r->eof && r->opos >= (double)r->src_read) break;   /* n_out = floor(n_in * ratio) */
+        long long last = r->src_read - 1;
+        if (last < 0) break;
+        long long i0 = idx - 1, i1 = idx, i2 = idx + 1, i3 = idx + 2;
+        if (i0 < 0) i0 = 0;
+        if (i1 > last) i1 = last;
+        if (i2 > last) i2 = last;
+        if (i3 > last) i3 = last;
+        if (i0 > last) i0 = last;
+        float y0 = r->mono[i0 - r->mono_base], y1 = r->mono[i1 - r->mono_base];
+        float y2 = r->mono[i2 - r->mono_base], y3 = r->mono[i3 - r->mono_base];
+        float fr = (float)(r->opos - (double)idx);
         float c1 = 0.5f * (y2 - y0);
         float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
         float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
-        o[i] = ((c3 * (float)fr + c2) * (float)fr + c1) * (float)fr + c0;
+        out[w++] = ((c3 * fr + c2) * fr + c1) * fr + y1;
+        r->opos += r->step;
     }
-    *out_len = n; return o;
+    return w;
 }
 
-/* Skip files too large to decode safely on-device: dr_libs loads the whole file to
- * f32 RAM before our pool cap applies, so a huge file could OOM the analyst. */
-#define INGEST_MAX_BYTES (128u * 1024 * 1024)
+double ingest_duration_s(const ingest_reader_t *r) {
+    return (r && r->sr && r->total) ? (double)r->total / (double)r->sr : 0.0;
+}
+
+void ingest_close(ingest_reader_t *r) {
+    if (!r) return;
+    switch (r->kind) {
+        case RD_FLAC: if (r->flac) drflac_close(r->flac); break;
+        case RD_MP3:  drmp3_uninit(&r->mp3); break;
+        default:      drwav_uninit(&r->wav); break;
+    }
+    free(r->ibuf); free(r->mono); free(r);
+}
 
 float *ingest_decode(const char *path, int target_sr, int *out_len) {
     *out_len = 0;
-    struct stat st;
-    if (stat(path, &st) == 0 && (unsigned long long)st.st_size > INGEST_MAX_BYTES) return NULL;
-    const char *ext = strrchr(path, '.');
-    unsigned int ch = 0, sr = 0;
-    drwav_uint64 frames = 0;
-    float *pcm = NULL;
-
-    if (ext && !strcasecmp(ext, ".flac")) {
-        pcm = drflac_open_file_and_read_pcm_frames_f32(path, &ch, &sr, &frames, NULL);
-    } else if (ext && !strcasecmp(ext, ".mp3")) {
-        drmp3_config cfg;
-        pcm = drmp3_open_file_and_read_pcm_frames_f32(path, &cfg, &frames, NULL);
-        if (pcm) { ch = cfg.channels; sr = cfg.sampleRate; }
-    } else {
-        pcm = drwav_open_file_and_read_pcm_frames_f32(path, &ch, &sr, &frames, NULL);
+    ingest_reader_t *r = ingest_open(path, target_sr);
+    if (!r) return NULL;
+    int cap = 1 << 16, n = 0;
+    float *buf = (float *)malloc(sizeof(float) * (size_t)cap);
+    while (buf) {
+        if (cap - n < 4096) {
+            if (cap > (1 << 29)) break;                       /* ~12 min @ 44.1k per GB of floats: stop growing */
+            float *nb = (float *)realloc(buf, sizeof(float) * (size_t)cap * 2);
+            if (!nb) break;
+            buf = nb; cap *= 2;
+        }
+        int got = ingest_read(r, buf + n, cap - n);
+        if (got <= 0) break;
+        n += got;
     }
-    if (!pcm) {   /* fallback: try WAV regardless of extension */
-        pcm = drwav_open_file_and_read_pcm_frames_f32(path, &ch, &sr, &frames, NULL);
-    }
-    if (!pcm || frames == 0 || ch == 0 || sr == 0) { free(pcm); return NULL; }
-    if (frames > 0x7fffffffULL) { free(pcm); return NULL; }   /* guard the int cast below */
-
-    int nf = (int)frames;
-    float *mono = (float *)malloc((size_t)nf * sizeof(float));
-    if (!mono) { free(pcm); return NULL; }
-    for (int i = 0; i < nf; i++) {
-        float s = 0.0f;
-        for (unsigned int c = 0; c < ch; c++) s += pcm[(size_t)i * ch + c];
-        mono[i] = s / (float)ch;
-    }
-    free(pcm);
-
-    float *out = resample_mono(mono, nf, (int)sr, target_sr, out_len);
-    free(mono);
-    return out;
+    ingest_close(r);
+    if (!buf || n == 0) { free(buf); return NULL; }
+    *out_len = n;
+    return buf;
 }

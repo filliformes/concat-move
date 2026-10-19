@@ -79,11 +79,11 @@ static inline float grain_env_val(int env, int age, int glen) {
     return g_env_tables[env][(int)(x * (GRAIN_ENV_TABLE - 1))];
 }
 
-static void spawn_grain(grain_engine_t *ge, corpus_index_t *ix,
+static int spawn_grain(grain_engine_t *ge, corpus_index_t *ix,
                         const float *target, const float *weight,
                         const grain_params_t *gp, float gain, const grain_amp_t *amp, float target_hz, int sr) {
     int sel = query_select(&ix->query, target, weight, gp->k_nearest, gp->radius, gp->smooth);
-    if (sel < 0 || sel >= ix->nslices || ix->slices[sel].len < 1) return;   /* need a playable slice */
+    if (sel < 0 || sel >= ix->nslices || ix->slices[sel].len < 1) return 0;   /* need a playable slice */
 
     /* Pick a free voice within the polyphony cap, else steal the grain NEAREST ITS END
      * (smallest samples-remaining) — it is already inside its window's fade, so cutting
@@ -161,6 +161,7 @@ static void spawn_grain(grain_engine_t *ge, corpus_index_t *ix,
     g->panl = 0.5f * (1.0f - pan);
     g->panr = 0.5f * (1.0f + pan);
     g->active = 1;
+    return 1;
 }
 
 static inline int16_t clamp16(float x) {
@@ -174,7 +175,15 @@ void grain_schedule(grain_engine_t *ge, corpus_index_t *ix,
                     float gain, const grain_amp_t *amp, float target_hz, double *accum, int frames, int sr) {
     if (!ix || ix->nslices == 0) return;
     *accum += (double)gp->density * frames / sr;
-    while (*accum >= 1.0) { spawn_grain(ge, ix, target, weight, gp, gain, amp, target_hz, sr); *accum -= 1.0; }
+    while (*accum >= 1.0) {
+        if (!spawn_grain(ge, ix, target, weight, gp, gain, amp, target_hz, sr)) {
+            /* No slice this block (the query deferred a search): retry next block rather
+             * than drop the grain, so a note's first grain is late by a block, not a period. */
+            if (*accum > 2.0) *accum = 2.0;
+            break;
+        }
+        *accum -= 1.0;
+    }
 }
 
 void grain_mix(grain_engine_t *ge, const grain_params_t *gp, int16_t *out_lr, int frames, int sr) {

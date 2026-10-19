@@ -7,6 +7,8 @@
 #include <string.h>
 #include <math.h>
 
+__thread volatile int *concat_cancel_flag = NULL;
+
 static int cmpf(const void *a, const void *b) {
     float x = *(const float *)a, y = *(const float *)b;
     return (x > y) - (x < y);
@@ -100,6 +102,9 @@ int concat_onset_slice(analysis_t *a, const float *buf, int len,
     }
 
     for (int i = 0; i < nf; i++) {
+        if ((i & 255) == 0 && concat_cancelled()) {          /* worker asked to stop */
+            free(flux); free(df); free(mag); free(prev); free(frame); free(onset); return 0;
+        }
         int p = i * hop;
         for (int j = 0; j < N; j++) frame[j] = buf[p + j];
         analysis_magnitude(a, frame, mag);

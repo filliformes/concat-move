@@ -27,10 +27,10 @@ int main(void) {
     if (pick < 0) { printf("  FAIL no corpus folder with >=5 audio files found\n\n0 passed, 1 failed\n"); return 1; }
     const char *folder = folders[pick].path;
     printf("    corpus: %s (%d files)\n", folder, folders[pick].nfiles);
-    int prog = 0;
+    corpus_build_info_t bi;
     /* ~1M-sample pool (~23s) so analysis stops after a few files → fast test. */
     struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0);
-    corpus_index_t *ix = corpus_index_build(folder, 44100, 0 /*onset*/, 2646, 17640, 0.02f, 1000000, NULL, 0, &prog);
+    corpus_index_t *ix = corpus_index_build(folder, 44100, 0 /*onset*/, 2646, 17640, 0.02f, 1000000, 0, NULL, 0, &bi);
     clock_gettime(CLOCK_MONOTONIC, &t1);
     double secs = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
 
@@ -41,7 +41,9 @@ int main(void) {
     snprintf(buf, sizeof(buf), "%d slices, pool %.1fs, %.1fs to analyze", ix->nslices, ix->pool_len / 44100.0, secs);
     check("nslices > 0", ix->nslices > 0, buf);
     check("pool used within cap", ix->pool_len > 0 && ix->pool_len <= ix->pool_cap, NULL);
-    check("progress reached 100", prog == 100, NULL);
+    check("build report: done, 95%, slice count", bi.phase == CB_DONE && bi.progress == 95 && bi.nslices == ix->nslices && bi.err == CB_OK, NULL);
+    check("index has a gen", ix->gen != 0, NULL);
+    check("pca projection present", !ix->pca_ok || ix->proj != NULL, NULL);
 
     int off_ok = 1;
     for (int i = 0; i < ix->nslices; i++)
@@ -118,11 +120,12 @@ int main(void) {
 
     /* OOM eviction: a small (overflowing) pool must build, respect the cap, and
      * still cover the corpus (descriptor range not collapsed to the first files). */
-    int pq = 0;
-    corpus_index_t *small = corpus_index_build(folder, 44100, 0, 2646, 17640, 0.02f, 250000, NULL, 0, &pq);
+    corpus_index_t *small = corpus_index_build(folder, 44100, 0, 2646, 17640, 0.02f, 1000000, 250000, NULL, 0, &bi);
     check("oom: overflowing pool still builds", small && small->nslices > 0, NULL);
     if (small) {
         check("oom: respects pool cap", small->pool_len <= 250000, NULL);
+        check("oom: reported as memory-limited", bi.mem_limited == 1, NULL);
+        check("oom: distinct gen", small->gen != ix->gen, NULL);
         double rb = qn_range(ix, D_CENTROID_MEAN), rs = qn_range(small, D_CENTROID_MEAN);
         char ob[128]; snprintf(ob, sizeof(ob), "centroid range small/big=%.2f  (n=%d vs %d)",
                                rb > 0 ? rs / rb : 0.0, small->nslices, ix->nslices);
@@ -137,10 +140,11 @@ int main(void) {
     const char *cd = "/data/UserData/schwung/concat-cache-test";
     struct timespec cb0, cb1, cl0, cl1;
     clock_gettime(CLOCK_MONOTONIC, &cb0);
-    corpus_index_t *c1 = corpus_index_build(folder, 44100, 0, 2646, 17640, 0.02f, 1000000, cd, 1, &prog);
+    corpus_index_t *c1 = corpus_index_build(folder, 44100, 0, 2646, 17640, 0.02f, 1000000, 0, cd, 1, &bi);
     clock_gettime(CLOCK_MONOTONIC, &cb1);
     clock_gettime(CLOCK_MONOTONIC, &cl0);
-    corpus_index_t *c2 = corpus_index_build(folder, 44100, 0, 2646, 17640, 0.02f, 1000000, cd, 0, &prog);
+    corpus_index_t *c2 = corpus_index_build(folder, 44100, 0, 2646, 17640, 0.02f, 1000000, 0, cd, 0, &bi);
+    int c2_from_cache = bi.from_cache;
     clock_gettime(CLOCK_MONOTONIC, &cl1);
     double t_build = (cb1.tv_sec - cb0.tv_sec) + (cb1.tv_nsec - cb0.tv_nsec) / 1e9;
     double t_load  = (cl1.tv_sec - cl0.tv_sec) + (cl1.tv_nsec - cl0.tv_nsec) / 1e9;
@@ -154,10 +158,28 @@ int main(void) {
         for (int i = 0; i < c2->pool_len; i++) if (c1->pool[i] != c2->pool[i]) { same = 0; break; }
         check("cache pool bytes identical", same, NULL);
         check("cache load faster than analysis", t_load < t_build, NULL);
+        check("cache hit reported", c2_from_cache == 1, NULL);
         check("cache preserves k-means clusters", c2->kclusters == c1->kclusters && c1->kclusters > 0, NULL);
         check("cache preserves PCA map", c2->pca_ok == c1->pca_ok && (!c1->pca_ok || fabs(c1->pca_axis[0][0] - c2->pca_axis[0][0]) < 1e-6), NULL);
     }
     corpus_index_free(c1); corpus_index_free(c2);
+
+    /* A memory-limited build must not overwrite the full cache: reload is still full. */
+    corpus_index_t *lim = corpus_index_build(folder, 44100, 0, 2646, 17640, 0.02f, 1000000, 250000, cd, 1, &bi);
+    corpus_index_t *full = corpus_index_build(folder, 44100, 0, 2646, 17640, 0.02f, 1000000, 0, cd, 0, &bi);
+    check("mem-limited build leaves the cache intact", lim && full && bi.from_cache && full->pool_len > lim->pool_len, NULL);
+    corpus_index_free(lim); corpus_index_free(full);
+
+    /* Cancellation: a raised flag makes the build bail out with CB_ERR_CANCEL. */
+    volatile int stop_now = 1;
+    concat_cancel_flag = &stop_now;
+    corpus_index_t *cx = corpus_index_build(folder, 44100, 0, 2646, 17640, 0.02f, 1000000, 0, NULL, 0, &bi);
+    concat_cancel_flag = NULL;
+    check("cancel: returns NULL with CB_ERR_CANCEL", cx == NULL && bi.err == CB_ERR_CANCEL, NULL);
+    corpus_index_free(cx);
+
+    corpus_index_t *nx = corpus_index_build("/data/UserData/no-such-folder-concat", 44100, 0, 2646, 17640, 0.02f, 1000000, 0, NULL, 0, &bi);
+    check("missing folder: CB_ERR_NOFILES", nx == NULL && bi.err == CB_ERR_NOFILES, NULL);
     printf("\n%d passed, %d failed\n", npass, nfail);
     return nfail ? 1 : 0;
 }

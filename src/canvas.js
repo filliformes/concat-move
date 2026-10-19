@@ -45,8 +45,17 @@ globalThis.canvas_overlay = {
         if (c.length < 2) continue;
         ctx.setPixel(sx(c[0]), sy(c[1]), 1);
       }
-    } else {
+    } else if (!vals.corpus_status) {
       ctx.print(2, (H >> 1) - 3, 'load a corpus', 1);
+    }
+
+    /* Analyst status ("analysing 3/40", "out of memory, kept old"...): empty when
+     * there is nothing to say. Centred if the map is empty, else at the foot
+     * (the touched-knob readout below draws over it while a knob is held). */
+    const status = String(vals.corpus_status || '');
+    if (status) {
+      if (!ptsRaw) ctx.print(2, (H >> 1) - 3, status, 1);
+      else { ctx.fillRect(0, H - 8, W, 8, 0); ctx.print(2, H - 7, status, 1); }
     }
 
     /* Live overlay: normalized "qx,qy,qr[,tx,ty]*" (query point + played trail). */

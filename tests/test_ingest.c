@@ -53,6 +53,34 @@ int main(void) {
     analysis_destroy(a);
     free(audio);
 
+    /* Streamed reader: reading every file in small windows (crossing chunk and window
+     * boundaries, resampling 48k/22.05k) yields the source duration at 44.1k, and the
+     * same samples as the whole-file decode. */
+    int len_ok = 1, same_ok = 1;
+    static float win[7919];                                     /* odd size: misaligned windows */
+    for (int i = 0; i < na; i++) {
+        ingest_reader_t *rd = ingest_open(paths[i], 44100);
+        if (!rd) { len_ok = 0; continue; }
+        double dur = ingest_duration_s(rd);
+        int whole_len = 0;
+        float *whole = ingest_decode(paths[i], 44100, &whole_len);
+        long total = 0; int got;
+        while ((got = ingest_read(rd, win, (int)(sizeof(win) / sizeof(win[0])))) > 0) {
+            for (int j = 0; j < got && whole; j++)
+                if (total + j >= whole_len || fabsf(win[j] - whole[total + j]) > 1e-6f) { same_ok = 0; break; }
+            total += got;
+        }
+        if (dur > 0 && fabs(total - dur * 44100.0) > 4.0) {
+            len_ok = 0;
+            printf("    %s: %ld frames, expected %.0f\n", paths[i], total, dur * 44100.0);
+        }
+        if (whole && total != whole_len) same_ok = 0;
+        free(whole);
+        ingest_close(rd);
+    }
+    check("stream: length matches source duration at 44.1k", len_ok, NULL);
+    check("stream: windowed read == whole-file decode", same_ok, NULL);
+
     printf("\n%d passed, %d failed\n", npass, nfail);
     return nfail ? 1 : 0;
 }

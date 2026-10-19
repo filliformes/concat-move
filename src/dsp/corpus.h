@@ -13,6 +13,13 @@
 
 #include "analysis.h"
 
+/* ── Cancellation ────────────────────────────────────────────────────────────
+ * A worker thread points concat_cancel_flag at its own flag; long loops in the
+ * build, decode and slicers poll concat_cancelled() and bail out. NULL (tests,
+ * other threads) = never cancelled. Defined in corpus.c. */
+extern __thread volatile int *concat_cancel_flag;
+static inline int concat_cancelled(void) { return concat_cancel_flag && *concat_cancel_flag; }
+
 /* Per-slice descriptor layout (NDESC dims). Indices are stable — the query and
  * nav-axis mapping depend on them. */
 enum {

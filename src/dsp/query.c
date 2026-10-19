@@ -3,6 +3,7 @@
  * Render-callable: no allocation, no locks.
  */
 #include "query.h"
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 
@@ -27,6 +28,10 @@ static int in_ring(const query_t *q, int idx) {
 void query_init(query_t *q, const float *qn, int nslices) {
     memset(q, 0, sizeof(*q));
     q->qn = qn; q->nslices = nslices; q->rng = 0x1234567u; q->last_sel = -1;
+    q->qt = nslices > 0 ? (float *)malloc(sizeof(float) * NDESC * (size_t)nslices) : NULL;
+    if (q->qt)
+        for (int i = 0; i < nslices; i++)
+            for (int d = 0; d < NDESC; d++) q->qt[(size_t)d * nslices + i] = qn[(size_t)i * NDESC + d];
     for (int d = 0; d < NDESC; d++) { q->nav_min[d] = 1e30f; q->nav_max[d] = -1e30f; }
     for (int i = 0; i < nslices; i++)
         for (int d = 0; d < NDESC; d++) {
@@ -35,6 +40,8 @@ void query_init(query_t *q, const float *qn, int nslices) {
             if (v > q->nav_max[d]) q->nav_max[d] = v;
         }
 }
+
+void query_free(query_t *q) { free(q->qt); q->qt = NULL; }
 
 void query_set_repeat_avoid(query_t *q, int n) {
     if (n < 0) n = 0;
@@ -57,10 +64,123 @@ void query_target_full(const float *robust_vec, float *t, float *w) {
     for (int d = 0; d < NDESC; d++) { t[d] = robust_vec[d]; w[d] = 1.0f; }
 }
 
-static float wdist2(const float *t, const float *w, const float *v) {
-    float d = 0.0f;
-    for (int i = 0; i < NDESC; i++) { float diff = t[i] - v[i]; d += w[i] * diff * diff; }
-    return d;
+/* ── Candidate search ────────────────────────────────────────────────────────
+ * Distances only run over the dims a target actually weights (a raw X/Y Map target
+ * weights 2 of 36, a Notes pitch target 1), Learned-map targets search the 2-D PCA
+ * plane, and the K-nearest list is kept until the target moves, so a held pad or a
+ * parked X/Y scans the corpus once instead of once per grain. */
+
+static int active_dims(const float *w, int *dims) {
+    int n = 0;
+    for (int i = 0; i < NDESC; i++) if (w[i] != 0.0f) dims[n++] = i;
+    return n;
+}
+
+static int is_plane(const query_t *q, const float *w) { return q->proj && w[0] == QUERY_W_PLANE; }
+
+static int cost_per_slice(const query_cands_t *c) {
+    if (c->plane) return 2;
+    int dims[NDESC], nd = active_dims(c->w, dims);
+    return nd > 0 ? nd : 1;
+}
+
+static int same_target(const query_cands_t *c, int plane, const float *t, const float *w) {
+    if (!c->valid || c->plane != plane) return 0;
+    if (plane) return c->t[0] == t[0] && c->t[1] == t[1];
+    return memcmp(c->t, t, sizeof(float) * NDESC) == 0 && memcmp(c->w, w, sizeof(float) * NDESC) == 0;
+}
+
+static void cands_begin(query_cands_t *c, int plane, const float *t, const float *w, int m) {
+    c->valid = 0; c->plane = plane; c->m = m; c->n = 0;
+    memcpy(c->t, t, sizeof(float) * NDESC);
+    memcpy(c->w, w, sizeof(float) * NDESC);
+}
+
+static inline void cands_insert(query_cands_t *c, float d, int i) {
+    int p;
+    if (c->n < c->m) p = c->n++;
+    else if (d < c->d[c->m - 1]) p = c->m - 1;
+    else return;
+    while (p > 0 && c->d[p - 1] > d) { c->d[p] = c->d[p - 1]; c->idx[p] = c->idx[p - 1]; p--; }
+    c->d[p] = d; c->idx[p] = i;
+}
+
+/* Fold slices [from, to) into the list. */
+static void cands_scan(const query_t *q, query_cands_t *c, int from, int to) {
+    if (c->plane) {
+        const float *p = q->proj;
+        const float tx = c->t[0], ty = c->t[1];
+        for (int i = from; i < to; i++) {
+            float dx = tx - p[2 * i], dy = ty - p[2 * i + 1];
+            cands_insert(c, dx * dx + dy * dy, i);
+        }
+        return;
+    }
+    int dims[NDESC], nd = active_dims(c->w, dims);
+    if (q->qt && nd <= 8) {                  /* few dims: stream their columns */
+        const float *col[8]; float tv[8], wv[8];
+        for (int j = 0; j < nd; j++) { col[j] = &q->qt[(size_t)dims[j] * q->nslices]; tv[j] = c->t[dims[j]]; wv[j] = c->w[dims[j]]; }
+        for (int i = from; i < to; i++) {
+            float d = 0.0f;
+            for (int j = 0; j < nd; j++) { float df = tv[j] - col[j][i]; d += wv[j] * df * df; }
+            if (c->n < c->m || d < c->d[c->m - 1]) cands_insert(c, d, i);
+        }
+        return;
+    }
+    for (int i = from; i < to; i++) {        /* many dims: rows are read whole anyway */
+        const float *v = &q->qn[(size_t)i * NDESC];
+        float d = 0.0f;
+        for (int j = 0; j < nd; j++) { int k = dims[j]; float df = c->t[k] - v[k]; d += c->w[k] * df * df; }
+        cands_insert(c, d, i);
+    }
+}
+
+void query_tick(query_t *q) {
+    q->blk_cost = 0;
+    if (!q->scan_active) return;
+    int step = QUERY_SCAN_BUDGET / cost_per_slice(&q->scan);
+    if (step < 1) step = 1;
+    int to = q->scan_pos + step;
+    if (to > q->nslices) to = q->nslices;
+    cands_scan(q, &q->scan, q->scan_pos, to);
+    q->scan_pos = to;
+    if (to >= q->nslices) {
+        q->scan.valid = 1;
+        int slot = q->cache_next; q->cache_next = (q->cache_next + 1) % QUERY_SLOTS;
+        q->cache[slot] = q->scan; q->last_slot = slot;
+        q->scan_active = 0;
+    }
+}
+
+/* Find or make a candidate list for target (t,w) with at least m entries: reuse a slot,
+ * search now if that is cheap, or queue a budgeted search and serve the most recent
+ * list meanwhile. Returns the slot to pick from (may be invalid: nothing yet). */
+static const query_cands_t *refresh_cands(query_t *q, const float *t, const float *w, int m) {
+    int plane = is_plane(q, w);
+    for (int s = 0; s < QUERY_SLOTS; s++)
+        if (same_target(&q->cache[s], plane, t, w) && q->cache[s].m >= m) { q->last_slot = s; return &q->cache[s]; }
+    query_cands_t probe; probe.plane = plane; memcpy(probe.w, w, sizeof(float) * NDESC);
+    long cost = (long)q->nslices * cost_per_slice(&probe);
+    if (cost <= QUERY_SCAN_BUDGET) {
+        if (q->blk_cost > 0 && q->blk_cost + cost > QUERY_SCAN_BUDGET) return NULL;   /* next block */
+        q->blk_cost += cost;
+        int s = q->cache_next; q->cache_next = (q->cache_next + 1) % QUERY_SLOTS;
+        query_cands_t *c = &q->cache[s];
+        cands_begin(c, plane, t, w, m);
+        cands_scan(q, c, 0, q->nslices);
+        c->valid = 1; q->last_slot = s;
+        return c;
+    }
+    /* A running search finishes its own target first (restarting on every move would
+     * never finish under a moving Mosaic target); the next call queues the latest. */
+    if (!q->scan_active) {
+        cands_begin(&q->scan, plane, t, w, m);
+        q->scan_active = 1; q->scan_pos = 0;
+        query_tick(q);                       /* make a start now */
+        for (int s = 0; s < QUERY_SLOTS; s++)   /* it may have completed right away */
+            if (same_target(&q->cache[s], plane, t, w) && q->cache[s].m >= m) { q->last_slot = s; return &q->cache[s]; }
+    }
+    return &q->cache[q->last_slot];
 }
 
 /* Full-space squared distance between two slices (concatenation cost). */
@@ -82,28 +202,22 @@ int query_select(query_t *q, const float *t, const float *w, int k, float radius
     if (smooth < 0.0f) smooth = 0.0f;
     if (smooth > 1.0f) smooth = 1.0f;
 
+    int m = k + q->ring_cap;                 /* enough that k survive the ring filter */
+    if (m > QUERY_CAND_MAX) m = QUERY_CAND_MAX;
+    if (m > q->nslices) m = q->nslices;
+    const query_cands_t *c = refresh_cands(q, t, w, m);
+    if (!c || !c->valid || c->n == 0) return -1;   /* first big search still running: no grain yet */
+
     float bd[QUERY_RING_MAX]; int bi[QUERY_RING_MAX]; int nb = 0;  /* K-best, ascending */
-    for (int i = 0; i < q->nslices; i++) {
-        if (in_ring(q, i)) continue;
-        float d = wdist2(t, w, &q->qn[i * NDESC]);
-        if (nb < k) {
-            int p = nb++;
-            while (p > 0 && bd[p - 1] > d) { bd[p] = bd[p - 1]; bi[p] = bi[p - 1]; p--; }
-            bd[p] = d; bi[p] = i;
-        } else if (d < bd[k - 1]) {
-            int p = k - 1;
-            while (p > 0 && bd[p - 1] > d) { bd[p] = bd[p - 1]; bi[p] = bi[p - 1]; p--; }
-            bd[p] = d; bi[p] = i;
-        }
+    for (int j = 0; j < c->n && nb < k; j++) {
+        if (in_ring(q, c->idx[j])) continue;
+        bd[nb] = c->d[j]; bi[nb] = c->idx[j]; nb++;
     }
 
     if (nb == 0) {                          /* every candidate is ring-forbidden: nearest overall */
-        int best = -1; float bestd = 1e30f;
-        for (int i = 0; i < q->nslices; i++) {
-            if (i == q->last_sel) continue; /* avoid an immediate repeat when possible */
-            float d = wdist2(t, w, &q->qn[i * NDESC]);
-            if (d < bestd) { bestd = d; best = i; }
-        }
+        int best = -1;
+        for (int j = 0; j < c->n; j++)
+            if (c->idx[j] != q->last_sel) { best = c->idx[j]; break; }   /* avoid an immediate repeat */
         if (best < 0) best = q->last_sel;   /* only last_sel is available (tiny corpus) */
         if (best >= 0) { push_ring(q, best); q->last_sel = best; }
         return best;

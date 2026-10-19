@@ -35,6 +35,57 @@ static uint64_t fnv1a(uint64_t h, const void *data, int n) {
     return h;
 }
 
+static uint32_t g_index_gen = 0;                 /* bumped for every index handed out */
+static void index_stamp(corpus_index_t *ix) { ix->gen = __atomic_add_fetch(&g_index_gen, 1, __ATOMIC_RELAXED); }
+
+/* Large reads/writes in 4 MB steps so a cancel request is honoured within ~50 ms. */
+#define IO_STEP (4u << 20)
+static int read_chunked(void *dst, size_t bytes, FILE *fp) {
+    unsigned char *p = (unsigned char *)dst;
+    while (bytes) {
+        if (concat_cancelled()) return 0;
+        size_t n = bytes < IO_STEP ? bytes : IO_STEP;
+        if (fread(p, 1, n, fp) != n) return 0;
+        p += n; bytes -= n;
+    }
+    return 1;
+}
+static int write_chunked(const void *src, size_t bytes, FILE *fp) {
+    const unsigned char *p = (const unsigned char *)src;
+    while (bytes) {
+        if (concat_cancelled()) return 0;
+        size_t n = bytes < IO_STEP ? bytes : IO_STEP;
+        if (fwrite(p, 1, n, fp) != n) return 0;
+        p += n; bytes -= n;
+    }
+    return 1;
+}
+
+/* Per-slice coordinates on the PCA plane (same units as pca_min/max), so Learned-map
+ * queries are a 2-D search that matches what the View draws. */
+static void corpus_project(corpus_index_t *ix) {
+    free(ix->proj); ix->proj = NULL; ix->query.proj = NULL;
+    if (!ix->pca_ok || ix->nslices <= 0) return;
+    ix->proj = (float *)malloc(sizeof(float) * 2 * (size_t)ix->nslices);
+    if (!ix->proj) return;
+    for (int i = 0; i < ix->nslices; i++) {
+        const float *q = &ix->qn[(size_t)i * NDESC];
+        double p1 = 0.0, p2 = 0.0;
+        for (int j = 0; j < NDESC; j++) { double dq = q[j] - ix->pca_mean[j]; p1 += dq * ix->pca_axis[0][j]; p2 += dq * ix->pca_axis[1][j]; }
+        ix->proj[2 * i] = (float)p1; ix->proj[2 * i + 1] = (float)p2;
+    }
+    ix->query.proj = ix->proj;                 /* after query_init (which clears the query) */
+}
+
+long corpus_mem_available_mb(void) {
+    FILE *fp = fopen("/proc/meminfo", "r");
+    if (!fp) return 0;
+    char line[160]; long kb = 0;
+    while (fgets(line, sizeof line, fp)) if (!strncmp(line, "MemAvailable:", 13)) { kb = atol(line + 13); break; }
+    fclose(fp);
+    return kb / 1024;
+}
+
 /* Order-independent content signature: XOR of per-file (path+mtime+size) hashes,
  * mixed with the slicing params. Returns 0 (→ "no signature") if any stat fails. */
 static uint64_t corpus_signature(char (*paths)[INGEST_PATH], int nfiles,
@@ -63,7 +114,7 @@ static void cache_path(char *out, int outsz, const char *cache_dir, const char *
 
 /* Load a cached index if the signature matches and it still fits the pool cap. */
 static corpus_index_t *cache_load(const char *cache_dir, const char *folder,
-                                  uint64_t sig, int pool_cap_samples) {
+                                  uint64_t sig, int pool_cap_samples, int mem_cap_samples) {
     char path[600]; cache_path(path, sizeof(path), cache_dir, folder);
     FILE *fp = fopen(path, "rb");
     if (!fp) return NULL;
@@ -71,7 +122,8 @@ static corpus_index_t *cache_load(const char *cache_dir, const char *folder,
     if (fread(&hd, sizeof(hd), 1, fp) != 1 ||
         hd.magic != CACHE_MAGIC || hd.ver != CACHE_VER || hd.ndesc != NDESC ||
         hd.sig != sig || hd.nslices <= 0 || hd.pool_len <= 0 ||
-        hd.pool_len > pool_cap_samples) { fclose(fp); return NULL; }
+        hd.pool_len > pool_cap_samples ||
+        (mem_cap_samples > 0 && hd.pool_len > mem_cap_samples)) { fclose(fp); return NULL; }
 
     corpus_index_t *ix = (corpus_index_t *)calloc(1, sizeof(corpus_index_t));
     if (!ix) { fclose(fp); return NULL; }
@@ -97,15 +149,17 @@ static corpus_index_t *cache_load(const char *cache_dir, const char *folder,
            & (fread(ix->pca_axis[1], sizeof(float), NDESC, fp) == (size_t)NDESC)
            & (fread(ix->pca_min,     sizeof(float), 2, fp) == 2)
            & (fread(ix->pca_max,     sizeof(float), 2, fp) == 2)
-           & (fread(ix->pool,   sizeof(int16_t), hd.pool_len, fp) == (size_t)hd.pool_len);
+           & read_chunked(ix->pool, sizeof(int16_t) * (size_t)hd.pool_len, fp);
     fclose(fp);
     if (!ok) { corpus_index_free(ix); return NULL; }
     /* Validate every slice's pool range (a corrupt-but-header-valid cache would else
      * make the render thread read out of the pool). */
     for (int i = 0; i < ix->nslices; i++)
         if (ix->slices[i].pool_off < 0 || ix->slices[i].len < 1 ||
-            ix->slices[i].pool_off + ix->slices[i].len > ix->pool_len) { corpus_index_free(ix); return NULL; }
+            (long)ix->slices[i].pool_off + ix->slices[i].len > (long)ix->pool_len) { corpus_index_free(ix); return NULL; }
     query_init(&ix->query, ix->qn, ix->nslices);
+    corpus_project(ix);
+    index_stamp(ix);
     return ix;
 }
 
@@ -132,8 +186,8 @@ static void cache_store(const char *cache_dir, const char *folder, uint64_t sig,
            & (fwrite(ix->pca_axis[1], sizeof(float), NDESC, fp) == (size_t)NDESC)
            & (fwrite(ix->pca_min,     sizeof(float), 2, fp) == 2)
            & (fwrite(ix->pca_max,     sizeof(float), 2, fp) == 2)
-           & (fwrite(ix->pool,   sizeof(int16_t), ix->pool_len, fp) == (size_t)ix->pool_len);
-    fclose(fp);
+           & write_chunked(ix->pool, sizeof(int16_t) * (size_t)ix->pool_len, fp);
+    if (fclose(fp) != 0) ok = 0;
     if (ok) rename(tmp, path); else remove(tmp);
 }
 
@@ -143,6 +197,8 @@ void corpus_index_free(corpus_index_t *ix) {
     free(ix->slices);
     free(ix->qn);
     free(ix->centroids);
+    free(ix->proj);
+    query_free(&ix->query);
     free(ix);
 }
 
@@ -164,6 +220,7 @@ static void corpus_kmeans(corpus_index_t *ix) {
         memcpy(&cen[k * NDESC], &ix->qn[((long)k * n / K) * NDESC], sizeof(float) * NDESC);
 
     for (int it = 0; it < KMEANS_ITERS; it++) {
+        if (concat_cancelled()) { free(cen); free(cnt); free(asg); return; }
         for (int i = 0; i < n; i++) {                        /* assign to nearest centroid */
             const float *q = &ix->qn[i * NDESC];
             int best = 0; float bd = 1e30f;
@@ -339,91 +396,122 @@ static void corpus_write_scatter_bmp(corpus_index_t *ix, const char *cache_dir, 
     }
 }
 
+#define WIN_SECONDS    60     /* streamed decode window (10.6 MB of floats at 44.1k) */
+#define MEM_FLOOR_MB   150    /* stop adding files if free RAM drops below this mid-build */
+
 corpus_index_t *corpus_index_build(const char *folder, int sr,
                                    int slice_mode, int min_len, int max_len,
-                                   float sil_gate, int pool_cap_samples,
+                                   float sil_gate, int pool_cap_samples, int mem_cap_samples,
                                    const char *cache_dir, int force_rescan,
-                                   volatile int *progress) {
-    if (progress) *progress = 0;
+                                   corpus_build_info_t *info) {
+    corpus_build_info_t local;
+    if (!info) info = &local;
+    memset((void *)info, 0, sizeof(*info));
+    info->phase = CB_SCAN;
+
+    int cap = pool_cap_samples;
+    if (mem_cap_samples > 0 && mem_cap_samples < cap) { cap = mem_cap_samples; info->mem_limited = 1; }
+    if (cap < 1) cap = 1;
 
     char (*paths)[INGEST_PATH] = (char (*)[INGEST_PATH])malloc(sizeof(char[INGEST_PATH]) * MAX_FILES);
-    if (!paths) return NULL;
+    if (!paths) { info->err = CB_ERR_MEM; return NULL; }
     int nfiles = ingest_list_audio(folder, paths, MAX_FILES);
-    if (nfiles <= 0) { free(paths); return NULL; }
+    if (nfiles <= 0) { free(paths); info->err = CB_ERR_NOFILES; return NULL; }
+    info->files_total = nfiles;
 
-    /* Fast path: an on-disk cache whose signature still matches → load, skip analysis. */
+    /* Fast path: an on-disk cache whose signature still matches -> load, skip analysis.
+     * It is valid up to the user's Pool Cap; it is only refused if free RAM can't hold it. */
     uint64_t sig = cache_dir ? corpus_signature(paths, nfiles, slice_mode, min_len, max_len, sil_gate, sr) : 0;
     if (cache_dir && sig && !force_rescan) {
-        corpus_index_t *hit = cache_load(cache_dir, folder, sig, pool_cap_samples);
+        info->phase = CB_LOAD;
+        corpus_index_t *hit = cache_load(cache_dir, folder, sig, pool_cap_samples, mem_cap_samples);
         if (hit) {
             corpus_write_scatter_bmp(hit, cache_dir, folder);   /* regenerate scatter image (cheap) */
-            free(paths); if (progress) *progress = 100; return hit;
+            free(paths);
+            info->from_cache = 1; info->mem_limited = 0; info->nslices = hit->nslices;
+            info->files_done = nfiles; info->progress = 95; info->phase = CB_DONE;
+            return hit;
         }
+        if (concat_cancelled()) { free(paths); info->err = CB_ERR_CANCEL; return NULL; }
     }
 
+    info->phase = CB_ANALYSE;
     analysis_t *a = analysis_create(sr, 1024, 40, 13);
     corpus_index_t *ix = (corpus_index_t *)calloc(1, sizeof(corpus_index_t));
     slice_range_t *ranges = (slice_range_t *)malloc(sizeof(slice_range_t) * MAX_SLICES_FILE);
-    if (!a || !ix || !ranges) { free(paths); free(ranges); analysis_destroy(a); free(ix); return NULL; }
+    int win_cap = sr * WIN_SECONDS;
+    float *win = (float *)malloc(sizeof(float) * (size_t)win_cap);
+    if (!a || !ix || !ranges || !win) {
+        free(paths); free(ranges); free(win); analysis_destroy(a); free(ix);
+        info->err = CB_ERR_MEM; return NULL;
+    }
 
-    ix->pool = (int16_t *)malloc(sizeof(int16_t) * (size_t)pool_cap_samples);
-    ix->pool_cap = pool_cap_samples;
+    ix->pool = (int16_t *)malloc(sizeof(int16_t) * (size_t)cap);
+    ix->pool_cap = cap;
     int scap = 1024;
     ix->slices = (cslice_t *)malloc(sizeof(cslice_t) * scap);
     float *raw = (float *)malloc(sizeof(float) * NDESC * scap);
     if (!ix->pool || !ix->slices || !raw) {
-        free(paths); free(ranges); free(raw); analysis_destroy(a);
-        corpus_index_free(ix); return NULL;
+        free(paths); free(ranges); free(win); free(raw); analysis_destroy(a);
+        corpus_index_free(ix); info->err = CB_ERR_MEM; return NULL;
     }
 
     /* OOM eviction: analyse every file, but cap the pooled AUDIO. A keep-stride
      * driven by how full the pool is decimates the retained (audible) slices so
-     * they spread across the whole corpus — even within one big file — instead
-     * of truncating to the first files. A corpus that fits keeps everything. */
-    /* Estimate the corpus size from file sizes so the decimation stride is right from the
-     * FIRST slice. A fullness-only curve front-loads badly when the pool fills inside the
-     * first file or two (a library of many short files); the curve below still corrects an
-     * off estimate. Rough per-format bytes -> mono-sample factors. */
+     * they spread across the whole corpus (even within one big file) instead
+     * of truncating to the first files. A corpus that fits keeps everything.
+     * The stride starts from a file-size estimate so it is right from the first slice. */
     double est_samples = 0.0;
     for (int f = 0; f < nfiles; f++) {
         struct stat est; if (stat(paths[f], &est) != 0) continue;
         const char *e = strrchr(paths[f], '.');
-        double factor = 0.25;                                    /* wav 16-bit stereo: 4 B/sample */
+        double factor = 0.25;                                    /* wav/aiff 16-bit stereo: 4 B/sample */
         if (e && !strcasecmp(e, ".flac")) factor = 0.5;          /* ~2:1 */
         else if (e && !strcasecmp(e, ".mp3")) factor = 2.75;     /* ~10:1 */
         est_samples += (double)est.st_size * factor;
     }
     int base_stride = 1;
-    if (pool_cap_samples > 0 && est_samples > (double)pool_cap_samples)
-        base_stride = (int)(est_samples / (double)pool_cap_samples + 0.5);
+    if (est_samples > (double)cap) base_stride = (int)(est_samples / (double)cap + 0.5);
     if (base_stride < 1) base_stride = 1;
     if (base_stride > 256) base_stride = 256;
 
-    int  oom_stop = 0;      /* set only on a real alloc failure — a hard stop */
+    int  stop = 0;          /* hard stop: alloc failure or cancel */
+    int  decoded_any = 0;
     long slice_idx = 0;     /* global slice counter, for the decimation stride */
-    for (int f = 0; f < nfiles && !oom_stop; f++) {
-        if (ix->pool_len >= (long)ix->pool_cap * 98 / 100) break;  /* full even after decimation → stop decoding the tail */
-        int len = 0;
-        float *audio = ingest_decode(paths[f], sr, &len);
-        if (audio && len > 0) {
+    for (int f = 0; f < nfiles && !stop; f++) {
+        if (concat_cancelled()) { stop = 1; break; }
+        if (ix->pool_len >= (long)ix->pool_cap * 98 / 100) { info->files_skipped = nfiles - f; break; }
+        long av = corpus_mem_available_mb();
+        if (av > 0 && av < MEM_FLOOR_MB) { info->mem_limited = 1; info->files_skipped = nfiles - f; break; }
+
+        ingest_reader_t *rd = ingest_open(paths[f], sr);
+        if (!rd) { info->files_failed++; info->files_done = f + 1; continue; }
+        decoded_any = 1;
+        for (;;) {                                               /* one window at a time */
+            if (concat_cancelled()) { stop = 1; break; }
+            int len = ingest_read(rd, win, win_cap);
+            if (len <= 0) break;
             int nr = (slice_mode == 1)
-                ? concat_fixed_slice(a, audio, len, max_len, sil_gate, ranges, MAX_SLICES_FILE)
-                : concat_onset_slice(a, audio, len, min_len, max_len, sil_gate, ranges, MAX_SLICES_FILE);
-            for (int s = 0; s < nr; s++) {
+                ? concat_fixed_slice(a, win, len, max_len, sil_gate, ranges, MAX_SLICES_FILE)
+                : concat_onset_slice(a, win, len, min_len, max_len, sil_gate, ranges, MAX_SLICES_FILE);
+            for (int s = 0; s < nr && !stop; s++) {
+                if (concat_cancelled()) { stop = 1; break; }   /* per slice: YIN makes each one costly */
                 long pf = (long)ix->pool_len * 100 / (ix->pool_cap > 0 ? ix->pool_cap : 1);   /* % full */
                 int stride = pf < 75 ? 1 : pf < 88 ? 2 : pf < 95 ? 4 : 8;   /* pack to 75%, then thin the tail */
                 if (base_stride > stride) stride = base_stride;             /* size-estimate floor */
                 if ((slice_idx++ % stride) != 0) continue;         /* decimate as the pool fills */
                 int slen = ranges[s].len;
-                if (ix->pool_len + slen > ix->pool_cap) continue;  /* no room → drop audio, keep scanning */
+                if ((long)ix->pool_len + slen > (long)ix->pool_cap) continue;  /* no room: drop audio, keep scanning */
                 if (ix->nslices >= scap) {
                     int ns = scap * 2;
                     cslice_t *nsl = (cslice_t *)realloc(ix->slices, sizeof(cslice_t) * ns);
-                    float    *nr2 = (float *)realloc(raw, sizeof(float) * NDESC * ns);
-                    if (!nsl || !nr2) { oom_stop = 1; if (nsl) ix->slices = nsl; if (nr2) raw = nr2; break; }
-                    ix->slices = nsl; raw = nr2; scap = ns;
+                    if (nsl) ix->slices = nsl;
+                    float    *nr2 = nsl ? (float *)realloc(raw, sizeof(float) * NDESC * ns) : NULL;
+                    if (nr2) raw = nr2;
+                    if (!nsl || !nr2) { stop = 1; info->mem_limited = 1; break; }
+                    scap = ns;
                 }
-                const float *src = &audio[ranges[s].start];
+                const float *src = &win[ranges[s].start];
                 int off = ix->pool_len;
                 for (int i = 0; i < slen; i++) {
                     float v = src[i];
@@ -432,32 +520,48 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
                 }
                 ix->slices[ix->nslices].pool_off = off;
                 ix->slices[ix->nslices].len = slen;
-                concat_slice_descriptor(a, src, slen, &raw[ix->nslices * NDESC]);
-                ix->slices[ix->nslices].pitch = raw[ix->nslices * NDESC + D_PITCH];  /* for Notes retune */
+                concat_slice_descriptor(a, src, slen, &raw[(size_t)ix->nslices * NDESC]);
+                ix->slices[ix->nslices].pitch = raw[(size_t)ix->nslices * NDESC + D_PITCH];  /* for Notes retune */
                 ix->nslices++;
                 ix->pool_len += slen;
             }
-            free(audio);
+            if (ix->pool_len >= (long)ix->pool_cap * 98 / 100) break;
         }
-        if (progress) *progress = (int)((long)(f + 1) * 100 / nfiles);
+        ingest_close(rd);
+        info->files_done = f + 1;
+        info->progress = (int)((long)(f + 1) * 90 / nfiles);
     }
 
-    free(paths); free(ranges); analysis_destroy(a);
+    free(paths); free(ranges); free(win); analysis_destroy(a);
 
-    if (ix->nslices == 0) { free(raw); corpus_index_free(ix); return NULL; }
+    if (concat_cancelled()) { free(raw); corpus_index_free(ix); info->err = CB_ERR_CANCEL; return NULL; }
+    if (ix->nslices == 0) {
+        free(raw); corpus_index_free(ix);
+        info->err = !decoded_any ? CB_ERR_NOAUDIO : (stop || info->mem_limited) ? CB_ERR_MEM : CB_ERR_GATED;
+        return NULL;
+    }
 
+    info->phase = CB_FINAL;
     concat_robust_fit(raw, ix->nslices, ix->median, ix->iqr);
-    ix->qn = (float *)malloc(sizeof(float) * NDESC * ix->nslices);
-    if (!ix->qn) { free(raw); corpus_index_free(ix); return NULL; }
+    ix->qn = (float *)malloc(sizeof(float) * NDESC * (size_t)ix->nslices);
+    if (!ix->qn) { free(raw); corpus_index_free(ix); info->err = CB_ERR_MEM; return NULL; }
     for (int i = 0; i < ix->nslices; i++)
-        concat_robust_apply(&raw[i * NDESC], ix->median, ix->iqr, &ix->qn[i * NDESC]);
+        concat_robust_apply(&raw[(size_t)i * NDESC], ix->median, ix->iqr, &ix->qn[(size_t)i * NDESC]);
     free(raw);
 
     query_init(&ix->query, ix->qn, ix->nslices);
     corpus_kmeans(ix);                                              /* pad-jump cluster centroids */
     corpus_pca(ix);                                                 /* learned 2-D map axes */
+    corpus_project(ix);                                             /* 2-D coords for Learned queries */
+    if (concat_cancelled()) { corpus_index_free(ix); info->err = CB_ERR_CANCEL; return NULL; }
     corpus_write_scatter_bmp(ix, cache_dir, folder);                /* canvas.js scatter image */
-    if (cache_dir && sig) cache_store(cache_dir, folder, sig, ix);   /* best-effort */
-    if (progress) *progress = 100;
+    info->progress = 95;
+    if (cache_dir && sig && !info->mem_limited) {                   /* never overwrite the full cache */
+        info->phase = CB_SAVE;                                      /* with a memory-decimated subset */
+        cache_store(cache_dir, folder, sig, ix);                    /* best-effort; aborts on cancel */
+    }
+    index_stamp(ix);
+    info->nslices = ix->nslices;
+    info->phase = CB_DONE;
     return ix;
 }

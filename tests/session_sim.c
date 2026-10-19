@@ -234,6 +234,8 @@ int main(int argc, char **argv) {
         void *in = A->create_instance(moddir, NULL); wait_ready(in, 60);
         GP(in, "_dbg"); const char *ns = strstr(GBUF, "nslices="); int n0 = ns ? atoi(ns + 8) : -1;
         double t0p = now_us();
+        const char *ppool = getenv("PERF_POOL");   /* e.g. 512: worst case (default pool is 128) */
+        if (ppool) SP(in, "pool_mb", ppool);
         SP(in, "src_scope", "Folder"); SP(in, "corpus_file", big);
         double tr = wait_ready(in, 1800);
         double tlive = -1;                      /* "Analyze 100" is not "new corpus live": wait for the swap */
@@ -354,8 +356,8 @@ int main(int argc, char **argv) {
     /* ===== S8 state round trip ===== */
     SP(in, "density", "37"); SP(in, "grain_env", "Gauss"); SP(in, "level_norm", "0.73"); SP(in, "play_mode", "Map");
     n = GP(in, "state"); char *state = strdup(GBUF); dump("state.txt", state, n); printf("S8 state: %d bytes\n", n);
-    static char before[160][64];
-    for (int i = 0; i < NPD; i++) { GP(in, PD[i].key); snprintf(before[i], 64, "%s", GBUF); }
+    static char before[160][512];
+    for (int i = 0; i < NPD; i++) { GP(in, PD[i].key); snprintf(before[i], 512, "%s", GBUF); }
     t0 = now_us(); A->destroy_instance(in); printf("S8 destroy (after full session): %.0f us\n", now_us() - t0);
     t0 = now_us(); in = A->create_instance(moddir, state); printf("S8 create_instance(with state): %.0f us\n", now_us() - t0);
     int mism = 0;

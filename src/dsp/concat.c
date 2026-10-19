@@ -39,6 +39,8 @@
 #include <fcntl.h>
 #include <sched.h>
 #include <pthread.h>
+#include <dlfcn.h>
+#include <time.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include "ingest.h"
@@ -115,7 +117,7 @@ typedef struct {
 static const pdef_t PARAMS[NPARAMS] = {
     /* Corpus */
     [P_SRC_SCOPE]     = {"src_scope",    "Scope",        T_ENUM,   0,   1, 1,  ENV_SRC_SCOPE, 2, 1},   /* Folder | File (default File) */
-    [P_POOL_MB]       = {"pool_mb",      "Pool Cap",     T_INT,   16, 512, 1,  NULL, 0, 512, "MB"},
+    [P_POOL_MB]       = {"pool_mb",      "Pool Cap",     T_INT,   16, 512, 1,  NULL, 0, 128, "MB"},
     [P_RESCAN]        = {"rescan",       "Rescan",       T_INT,    0, 127, 1,  NULL, 0, 0},
     [P_SLICE_MODE]    = {"slice_mode",   "Slice Mode",   T_ENUM,   0,   1, 1,  ENV_SLICE_MODE, 2, 0},
     [P_MIN_SLICE]     = {"min_slice_ms", "Min Slice",    T_FLOAT, 20, 500, 5,  NULL, 0, 20,  "ms"},
@@ -232,7 +234,7 @@ typedef struct {
     /* Engine */
     grain_engine_t   ge;                 /* render-thread grain cloud */
     corpus_index_t  *index;              /* current corpus (atomic acquire/release) */
-    corpus_index_t  *ge_ix;              /* index the live grains' audio points into (flush on change) */
+    uint32_t         ge_gen;             /* gen of the index the live grains point into (flush on change) */
     pthread_t        analyst;            /* single worker; builds the index off-thread */
     pthread_mutex_t  lock;
     pthread_cond_t   cond;
@@ -242,10 +244,13 @@ typedef struct {
     int              shutdown;
     int              analyst_started;
     char             pending_path[512];
-    int              a_slice_mode, a_min_len, a_max_len, a_pool_samples;  /* snapshot at arm */
+    int              a_slice_mode, a_min_len, a_max_len, a_pool_mb;  /* snapshot at arm */
     int              a_force;             /* 1 = rescan (ignore disk cache) */
     float            a_sil;
-    volatile int     progress;           /* 0..100, served by get_param("analyze") */
+    volatile int     cancel;             /* analyst polls this (concat_cancel_flag) */
+    volatile int     building;           /* a build is running: status/progress come from binfo */
+    corpus_build_info_t binfo;           /* live report of the current / last build */
+    int              refs;               /* inst + analyst; last one out frees (bounded teardown) */
 
     /* Mosaic mode: live-input descriptor extraction (render thread) */
     const concat_host_t *host;
@@ -374,19 +379,6 @@ static int desc_index(int e) {
     }
 }
 
-/* MemAvailable in MB (parse /proc/meminfo directly — never shm_open). 0 on failure. */
-static long mem_available_mb(void) {
-    int fd = open("/proc/meminfo", O_RDONLY);
-    if (fd < 0) return 0;
-    char b[2048];
-    int n = (int)read(fd, b, sizeof(b) - 1);
-    close(fd);
-    if (n <= 0) return 0;
-    b[n] = 0;
-    char *p = strstr(b, "MemAvailable:");
-    return p ? atol(p + 13) / 1024 : 0;   /* kB → MB */
-}
-
 /* Derive the analysed path from the picked file: the file itself when Scope=File
  * (that one sample becomes the whole corpus), or its parent folder when Scope=Folder. */
 static void set_corpus_path(concat_t *inst) {
@@ -447,15 +439,24 @@ static void arm_analyst(concat_t *inst, int force) {
     inst->a_max_len = (int)(inst->pv[P_MAX_SLICE] * 44.1f);
     if (inst->a_min_len > inst->a_max_len) inst->a_min_len = inst->a_max_len;   /* guard degenerate slicing */
     inst->a_sil = inst->pv[P_SILENCE_GATE];
-    long pool_mb = (long)inst->pv[P_POOL_MB];
-    long avail = mem_available_mb();                 /* OOM guard: leave a 350 MB reserve */
-    long cap = pool_mb;
-    if (avail > 0) { long usable = avail - 350; if (usable < 32) usable = 32; if (cap > usable) cap = usable; }
-    if (cap < 8) cap = 8;
-    inst->a_pool_samples = (int)(cap * 1024 * 1024 / 2);   /* MB → int16 samples */
+    inst->a_pool_mb = (int)inst->pv[P_POOL_MB];      /* free-RAM guard runs on the analyst */
     inst->arm = 1;
+    inst->cancel = 1;                                /* abandon a running build: the newest pick wins */
     pthread_cond_signal(&inst->cond);
     pthread_mutex_unlock(&inst->lock);
+}
+
+/* Free everything the instance owns. Called by whichever of destroy_instance and
+ * the analyst drops the last reference (see destroy_instance). */
+static void free_instance(concat_t *inst) {
+    pthread_mutex_destroy(&inst->lock);
+    pthread_cond_destroy(&inst->cond);
+    analysis_destroy(inst->mono_analysis);
+    corpus_index_free(inst->index);
+    free(inst);
+}
+static void drop_ref(concat_t *inst) {
+    if (__atomic_sub_fetch(&inst->refs, 1, __ATOMIC_ACQ_REL) == 0) free_instance(inst);
 }
 
 static void *analyst_thread(void *arg) {
@@ -464,6 +465,7 @@ static void *analyst_thread(void *arg) {
     sched_setscheduler(0, SCHED_OTHER, &sp);         /* demote off the shim's FIFO 70 */
     cpu_set_t cs; CPU_ZERO(&cs); CPU_SET(0, &cs); CPU_SET(1, &cs); CPU_SET(2, &cs);
     sched_setaffinity(0, sizeof(cs), &cs);           /* cores 0-2 (core 3 = SPI FIFO 90) */
+    concat_cancel_flag = &inst->cancel;              /* long loops in the build poll this */
 
     for (;;) {
         pthread_mutex_lock(&inst->lock);
@@ -477,31 +479,50 @@ static void *analyst_thread(void *arg) {
             pthread_mutex_unlock(&inst->lock);
             char f[512];
             if (inst->corpus_file[0] == 0 && auto_pick_corpus(f, sizeof f)) {
-                strncpy(inst->corpus_file, f, sizeof(inst->corpus_file) - 1);
-                inst->corpus_file[sizeof(inst->corpus_file) - 1] = 0;
-                set_corpus_path(inst);
+                pthread_mutex_lock(&inst->lock);
+                if (inst->corpus_file[0] == 0) {          /* the user may have picked meanwhile */
+                    strncpy(inst->corpus_file, f, sizeof(inst->corpus_file) - 1);
+                    inst->corpus_file[sizeof(inst->corpus_file) - 1] = 0;
+                    set_corpus_path(inst);
+                }
+                pthread_mutex_unlock(&inst->lock);
                 arm_analyst(inst, 0);
             }
             continue;
         }
         inst->arm = 0;
+        inst->cancel = 0;
         char path[512];
         strncpy(path, inst->pending_path, sizeof(path) - 1); path[sizeof(path) - 1] = 0;
-        int sm = inst->a_slice_mode, mn = inst->a_min_len, mx = inst->a_max_len, ps = inst->a_pool_samples;
+        int sm = inst->a_slice_mode, mn = inst->a_min_len, mx = inst->a_max_len, pmb = inst->a_pool_mb;
         int force = inst->a_force;
         float sg = inst->a_sil;
         pthread_mutex_unlock(&inst->lock);
+        if (!path[0]) continue;
 
-        if (path[0]) {
-            inst->progress = 0;
-            corpus_index_t *ni = corpus_index_build(path, 44100, sm, mn, mx, sg, ps,
-                                                    CONCAT_CACHE_DIR, force, &inst->progress);
-            build_map_pts(ni);   /* cache the scatter string before publishing (worker, once per load) */
-            corpus_index_t *old = __atomic_exchange_n(&inst->index, ni, __ATOMIC_ACQ_REL);
-            if (old) { usleep(60000); corpus_index_free(old); }  /* let one render block pass */
-            inst->progress = ni ? 100 : 0;
+        /* OOM guard, read here (not on the SPI thread): leave a 350 MB reserve, floor 32 MB. */
+        int pool_samples = (int)((long)pmb * 1024 * 1024 / 2);          /* MB -> int16 samples */
+        int mem_samples = 0;
+        long avail = corpus_mem_available_mb();
+        if (avail > 0) {
+            long usable = avail - 350;
+            if (usable < 32) usable = 32;
+            if (usable < pmb) mem_samples = (int)(usable * 1024 * 1024 / 2);
         }
+
+        inst->building = 1;
+        corpus_index_t *ni = corpus_index_build(path, 44100, sm, mn, mx, sg, pool_samples, mem_samples,
+                                                CONCAT_CACHE_DIR, force, &inst->binfo);
+        if (ni && (inst->cancel || inst->shutdown)) { corpus_index_free(ni); ni = NULL; }
+        if (ni) {                       /* a failed or cancelled build keeps the corpus that is playing */
+            build_map_pts(ni);          /* cache the scatter string before publishing (worker, once per load) */
+            corpus_index_t *old = __atomic_exchange_n(&inst->index, ni, __ATOMIC_ACQ_REL);
+            if (old) { usleep(60000); corpus_index_free(old); }  /* render flushes on the gen change */
+            inst->binfo.progress = 100;
+        }
+        inst->building = 0;
     }
+    drop_ref(inst);
     return NULL;
 }
 
@@ -518,9 +539,17 @@ static void *create_instance(const char *module_dir, const char *json_defaults) 
     grain_engine_init(&inst->ge);
     inst->host = g_host;
     inst->mono_analysis = analysis_create(44100, ANALYSIS_N, 40, 13);   /* Mosaic target extraction */
-    pthread_mutex_init(&inst->lock, NULL);
+    /* Priority inheritance: the SPI thread (FIFO 90) takes this lock in set_param, and
+     * the analyst holding it is SCHED_OTHER. Without PI a busy core could stall audio. */
+    pthread_mutexattr_t ma;
+    pthread_mutexattr_init(&ma);
+    pthread_mutexattr_setprotocol(&ma, PTHREAD_PRIO_INHERIT);
+    pthread_mutex_init(&inst->lock, &ma);
+    pthread_mutexattr_destroy(&ma);
     pthread_cond_init(&inst->cond, NULL);
+    inst->refs = 2;                                     /* this instance + its analyst */
     if (pthread_create(&inst->analyst, NULL, analyst_thread, inst) == 0) inst->analyst_started = 1;
+    else inst->refs = 1;
     if (json_defaults && *json_defaults)
         set_param(inst, "state", json_defaults);        /* restore params; may arm the analyst */
     if (inst->corpus_file[0] == 0 && inst->analyst_started) {
@@ -534,21 +563,40 @@ static void *create_instance(const char *module_dir, const char *json_defaults) 
     return inst;
 }
 
+/* Keep dsp.so mapped after the host's dlclose, so a detached analyst can finish
+ * the code it is running. Costs one never-unloaded copy of the module, only in
+ * the rare case the analyst did not stop in time. */
+static void pin_self(void) {
+    Dl_info di;
+    if (dladdr((void *)pin_self, &di) && di.dli_fname)
+        dlopen(di.dli_fname, RTLD_NOW | RTLD_NOLOAD | RTLD_NODELETE);
+}
+
+#define TEARDOWN_WAIT_MS 200
+
+/* Runs on the SPI thread, so it must not wait long: the old unbounded join froze the
+ * Move for 72 s when the module was swapped mid-analysis (2026-09-28 audit). Cancel the
+ * build, wait a bounded time, and if the analyst is still busy, detach it: it frees the
+ * instance itself when it exits (refcount), from a pinned copy of the code. */
 static void destroy_instance(void *instance) {
     concat_t *inst = (concat_t *)instance;
     if (!inst) return;
     if (inst->analyst_started) {
         pthread_mutex_lock(&inst->lock);
         inst->shutdown = 1;
+        inst->cancel = 1;
         pthread_cond_signal(&inst->cond);
         pthread_mutex_unlock(&inst->lock);
-        pthread_join(inst->analyst, NULL);
-        pthread_mutex_destroy(&inst->lock);
-        pthread_cond_destroy(&inst->cond);
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_nsec += (long)TEARDOWN_WAIT_MS * 1000000L;
+        if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+        if (pthread_timedjoin_np(inst->analyst, NULL, &ts) != 0) {
+            pin_self();
+            pthread_detach(inst->analyst);
+        }
     }
-    analysis_destroy(inst->mono_analysis);
-    corpus_index_free(inst->index);
-    free(inst);
+    drop_ref(inst);
 }
 
 /* ── MIDI ───────────────────────────────────────────────────────────────────── */
@@ -722,6 +770,36 @@ static void build_map_pts(corpus_index_t *ix) {
     }
 }
 
+/* One short line (fits the 128 px OLED) saying what the analyst is doing or what went
+ * wrong last time. Empty when a corpus is loaded and nothing needs saying. A failed
+ * build keeps the previous corpus playing, so the error says so. */
+static int corpus_status(concat_t *inst, char *buf, int buf_len) {
+    const corpus_build_info_t *b = &inst->binfo;
+    int have = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE) != NULL;
+    if (inst->building) {
+        switch (b->phase) {
+            case CB_LOAD:    return snprintf(buf, buf_len, "loading cache");
+            case CB_ANALYSE: return snprintf(buf, buf_len, "analysing %d/%d", b->files_done, b->files_total);
+            case CB_FINAL:   return snprintf(buf, buf_len, "mapping");
+            case CB_SAVE:    return snprintf(buf, buf_len, "saving cache");
+            default:         return snprintf(buf, buf_len, "scanning");
+        }
+    }
+    const char *e = NULL;
+    switch (b->err) {
+        case CB_ERR_NOFILES: e = "no audio files"; break;
+        case CB_ERR_NOAUDIO: e = "can't decode files"; break;
+        case CB_ERR_GATED:   e = "all silent"; break;
+        case CB_ERR_MEM:     e = "out of memory"; break;
+        default: break;                                  /* OK, or cancelled by a newer pick */
+    }
+    if (e) return snprintf(buf, buf_len, "%s%s", e, have ? ", kept old" : "");
+    if (have && b->mem_limited) return snprintf(buf, buf_len, "low RAM: %d slices", b->nslices);
+    if (have && b->files_failed) return snprintf(buf, buf_len, "%d files unreadable", b->files_failed);
+    if (buf_len > 0) buf[0] = 0;
+    return 0;
+}
+
 /* ── get_param ──────────────────────────────────────────────────────────────── */
 
 static int get_param(void *instance, const char *key, char *buf, int buf_len) {
@@ -737,13 +815,13 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
         int n = 0;
 #define CP_EMIT(...) do { if (n < buf_len) n += snprintf(buf + n, buf_len - n, __VA_ARGS__); } while (0)
         CP_EMIT("[{\"key\":\"corpus_file\",\"name\":\"Source\",\"type\":\"filepath\","
-                "\"root\":\"/data/UserData/UserLibrary\",\"filter\":[\".wav\",\".flac\",\".mp3\"]}");
+                "\"root\":\"/data/UserData/UserLibrary\",\"filter\":[\".wav\",\".aif\",\".aiff\",\".flac\",\".mp3\"]}");
         /* Corpus map as a 1.3.0 as_page: a normal knob page carrying a drawer, so
          * the encoders drive the level's knobs and pads reach the DSP. extra_keys
          * puts map_live + map_pts in the host's per-frame read rotation → drawPage
          * gets fresh values with no read on the draw path. */
         CP_EMIT(",{\"key\":\"map_view\",\"name\":\"View\",\"type\":\"canvas\",\"canvas_script\":\"canvas.js\","
-                "\"as_page\":true,\"preset_browser\":true,\"show_value\":false,\"extra_keys\":[\"map_live\",\"map_pts\"]}");
+                "\"as_page\":true,\"preset_browser\":true,\"show_value\":false,\"extra_keys\":[\"map_live\",\"map_pts\",\"corpus_status\"]}");
         /* Recipe browser triple, named by the View level's list/count/name_param. The
          * selector (preset_index) is a browser control, never a knob cell. */
         CP_EMIT(",{\"key\":\"preset_index\",\"name\":\"Recipe\",\"type\":\"int\",\"min\":0,\"max\":%d}", NRECIPES - 1);
@@ -751,6 +829,7 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
         CP_EMIT(",{\"key\":\"preset_name\",\"name\":\"Recipe\",\"type\":\"string\",\"access\":\"read\"}");
         CP_EMIT(",{\"key\":\"map_live\",\"name\":\"Live\",\"type\":\"string\",\"access\":\"read\"}");
         CP_EMIT(",{\"key\":\"map_pts\",\"name\":\"Pts\",\"type\":\"string\",\"access\":\"read\"}");
+        CP_EMIT(",{\"key\":\"corpus_status\",\"name\":\"Status\",\"type\":\"string\",\"access\":\"read\"}");
         for (int i = 0; i < NPARAMS; i++) {
             const pdef_t *p = &PARAMS[i];
             CP_EMIT(",{\"key\":\"%s\",\"name\":\"%s\",", p->key, p->label);
@@ -785,7 +864,12 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
     if (strcmp(key, "name") == 0) return snprintf(buf, buf_len, "Concat");
     if (strcmp(key, "corpus_file") == 0) return snprintf(buf, buf_len, "%s", inst->corpus_file);
     if (strcmp(key, "corpus_path") == 0) return snprintf(buf, buf_len, "%s", inst->corpus_path);
-    if (strcmp(key, "analyze") == 0) return snprintf(buf, buf_len, "%d", inst->progress);  /* live 0..100 */
+    if (strcmp(key, "analyze") == 0) {                 /* live 0..100 */
+        int pr = inst->building ? inst->binfo.progress
+                                : (__atomic_load_n(&inst->index, __ATOMIC_ACQUIRE) ? 100 : 0);
+        return snprintf(buf, buf_len, "%d", pr);
+    }
+    if (strcmp(key, "corpus_status") == 0) return corpus_status(inst, buf, buf_len);
 
     /* Canvas view feeds: cheap reads served every repaint on the SPI callback. */
     if (strcmp(key, "map_scatter") == 0) {
@@ -825,7 +909,7 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
     if (strcmp(key, "_dbg") == 0) {   /* debug introspection */
         corpus_index_t *ix = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE);
         return snprintf(buf, buf_len, "started=%d arm=%d prog=%d idx=%d nslices=%d pool=%d kclusters=%d pca=%d spb=%d path=[%s]",
-                        inst->analyst_started, inst->arm, inst->progress,
+                        inst->analyst_started, inst->arm, inst->binfo.progress,
                         ix != NULL, ix ? ix->nslices : -1, ix ? ix->pool_len : -1,
                         ix ? ix->kclusters : -1, ix ? ix->pca_ok : -1, (int)inst->samples_per_beat, inst->corpus_path);
     }
@@ -909,6 +993,11 @@ static void adsr_advance(int *stage, float *lvl, float atk, float dec, float sus
 static void pca_target(const corpus_index_t *ix, float xp, float yp, float *t, float *w) {
     float px = ix->pca_min[0] + xp * (ix->pca_max[0] - ix->pca_min[0]);
     float py = ix->pca_min[1] + yp * (ix->pca_max[1] - ix->pca_min[1]);
+    if (ix->proj) {                     /* search the plane itself: matches what the View draws */
+        memset(t, 0, sizeof(float) * NDESC); memset(w, 0, sizeof(float) * NDESC);
+        t[0] = px; t[1] = py; w[0] = QUERY_W_PLANE;
+        return;
+    }
     for (int j = 0; j < NDESC; j++) { t[j] = ix->pca_mean[j] + px * ix->pca_axis[0][j] + py * ix->pca_axis[1][j]; w[j] = 1.0f; }
 }
 
@@ -925,11 +1014,13 @@ static void render_block(void *instance, int16_t *out_lr, int frames) {
     if (!ix || ix->nslices == 0) { memset(out_lr, 0, sizeof(int16_t) * 2 * frames); return; }
 
     /* Corpus hot-swapped → flush grains before their pool pointers dangle (the analyst
-     * frees the old pool ~60 ms after the swap, but grains can live up to grain_len). */
-    if (ix != inst->ge_ix) { grain_flush(&inst->ge); inst->ge_ix = ix; }
+     * frees the old pool ~60 ms after the swap, but grains can live up to grain_len).
+     * Compare the gen, not the pointer: a new index can reuse a freed one's address. */
+    if (ix->gen != inst->ge_gen) { grain_flush(&inst->ge); inst->ge_gen = ix->gen; }
 
     /* Repeat-avoid depth can change live. */
     query_set_repeat_avoid(&ix->query, (int)inst->pv[P_REPEAT_AVOID]);
+    query_tick(&ix->query);                     /* advance a big budgeted search, if one is queued */
 
     grain_params_t gp;
     gp.k_nearest    = (int)inst->pv[P_K_NEAREST];

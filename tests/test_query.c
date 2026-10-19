@@ -88,6 +88,61 @@ int main(void) {
     check("concat: consecutive picks are neighbours (smooth)", avg_step < 160.0, "avg step %.0f (adjacent=100)", avg_step);
     check("concat: still wanders the corpus (not stuck)", nvisit >= 3, "%d/5 visited", nvisit);
 
+    /* Big corpus, full 36-dim target: over the budget, so the search is spread over
+     * query_tick calls. No grain until the first search completes, then the exact
+     * brute-force nearest; ticks per search stay bounded. */
+    {
+        const int NB = 20000;
+        float *big = malloc(sizeof(float) * NDESC * NB);
+        unsigned r = 12345u;
+        for (int i = 0; i < NB * NDESC; i++) { r = r * 1664525u + 1013904223u; big[i] = (r >> 8) * (1.0f / 16777216.0f) * 4.0f - 2.0f; }
+        query_t qb; query_init(&qb, big, NB); query_set_repeat_avoid(&qb, 0);
+        float tb[NDESC], wb[NDESC];
+        query_target_full(&big[777 * NDESC], tb, wb);
+        tb[0] += 0.01f;                                    /* near 777, not exactly on it */
+        int first = query_select(&qb, tb, wb, 1, 0.0f, 0.0f);
+        int ticks = 0;
+        while (qb.scan_active && ticks < 100) { query_tick(&qb); ticks++; }
+        int got = query_select(&qb, tb, wb, 1, 0.0f, 0.0f);
+        int best = -1; float bestd = 1e30f;
+        for (int i = 0; i < NB; i++) {
+            float d = 0; for (int j = 0; j < NDESC; j++) { float df = tb[j] - big[i * NDESC + j]; d += df * df; }
+            if (d < bestd) { bestd = d; best = i; }
+        }
+        check("budget: no grain before the first big search completes", first == -1, "first=%d", first);
+        check("budget: search completes in a few blocks", ticks > 0 && ticks <= 4, "%d ticks", ticks);
+        check("budget: result is the brute-force nearest", got == best, "got %d want %d", got, best);
+        int again = query_select(&qb, tb, wb, 1, 0.0f, 0.0f);
+        check("cache: unchanged target reuses the list (no new search)", again == best && !qb.scan_active, NULL);
+        /* Moving target: previous candidates serve while the new search runs. */
+        query_target_full(&big[4242 * NDESC], tb, wb);
+        int stale = query_select(&qb, tb, wb, 1, 0.0f, 0.0f);
+        check("budget: stale list serves during a new search", stale == best && qb.scan_active, "stale=%d", stale);
+        while (qb.scan_active) query_tick(&qb);
+        check("budget: new search lands on the new target", query_select(&qb, tb, wb, 1, 0.0f, 0.0f) == 4242, NULL);
+        free(big);
+    }
+
+    /* Learned plane: w[0] = QUERY_W_PLANE searches the bound 2-D projection. */
+    {
+        static float proj[5 * 2] = { 0,0,  1,0,  0,1,  1,1,  0.5f,0.5f };
+        query_t qp; query_init(&qp, qn, NS); query_set_repeat_avoid(&qp, 0);
+        qp.proj = proj;
+        float tp[NDESC] = {0}, wp[NDESC] = {0};
+        tp[0] = 0.9f; tp[1] = 0.1f; wp[0] = QUERY_W_PLANE;
+        check("plane: nearest in the PCA plane", query_select(&qp, tp, wp, 1, 0.0f, 0.0f) == 1, NULL);
+        tp[0] = 0.45f; tp[1] = 0.55f;
+        check("plane: moves with the target", query_select(&qp, tp, wp, 1, 0.0f, 0.0f) == 4, NULL);
+    }
+
+    /* Ring filter on cached candidates: repeat-avoid 2, k=1 never repeats within 3 picks. */
+    {
+        query_t qr; query_init(&qr, qn, NS); query_set_repeat_avoid(&qr, 2);
+        query_target_map(&qr, D_CENTROID_MEAN, D_PITCH, 0.0f, 0.0f, t, w);
+        int a = query_select(&qr, t, w, 1, 0.0f, 0.0f), b = query_select(&qr, t, w, 1, 0.0f, 0.0f), c = query_select(&qr, t, w, 1, 0.0f, 0.0f);
+        check("ring: cached list still honours repeat-avoid", a == 0 && b == 1 && c == 2, "%d %d %d", a, b, c);
+    }
+
     printf("\n%d passed, %d failed\n", npass, nfail);
     return nfail ? 1 : 0;
 }

@@ -34,23 +34,51 @@ typedef struct {
     char      scatter_bmp[600];    /* on-disk 128x64 8-bit BMP scatter (legacy; unused by as_page) */
     char      map_pts[4096];       /* cached scatter as int 0..1000 "x,y;..." for the View canvas
                                     * (built once per load by the DSP; runtime-only, not cached to disk) */
+    float    *proj;        /* [nslices*2] PCA-plane coords (pca_min/max units); NULL when !pca_ok.
+                            * Learned-map queries run in this 2-D space (runtime-only). */
+    uint32_t  gen;         /* unique per built/loaded index: the render thread flushes grains
+                            * when it changes (pointer compare alone can alias a freed index) */
 } corpus_index_t;
 
-/* Build an index+pool from every audio file in `folder`.
+/* ── Build report ────────────────────────────────────────────────────────────
+ * Filled by corpus_index_build so the UI can say what happened. Fields marked
+ * volatile are updated live while the build runs (read by other threads). */
+enum { CB_IDLE = 0, CB_SCAN, CB_LOAD, CB_ANALYSE, CB_FINAL, CB_SAVE, CB_DONE };
+enum { CB_OK = 0, CB_ERR_NOFILES, CB_ERR_NOAUDIO, CB_ERR_GATED, CB_ERR_MEM, CB_ERR_CANCEL };
+typedef struct {
+    volatile int phase;          /* CB_* */
+    volatile int files_total;
+    volatile int files_done;
+    volatile int progress;       /* 0..100 overall (100 only once the index is complete) */
+    int nslices;                 /* slices in the result */
+    int files_failed;            /* could not be opened/decoded */
+    int files_skipped;           /* not reached because the pool filled */
+    int from_cache;              /* 1 = loaded from the disk cache */
+    int mem_limited;             /* pool was capped below the user's Pool Cap by free RAM */
+    int err;                     /* CB_ERR_* when NULL is returned */
+} corpus_build_info_t;
+
+/* Build an index+pool from every audio file in `folder` (or the single file `folder`).
  *   slice_mode: 0 = onset, 1 = fixed-grain (grain length = max_len).
  *   min_len/max_len: slice clamps in samples. sil_gate: RMS floor.
- *   pool_cap_samples: hard cap on pooled audio (stops adding when full — v1, no eviction).
+ *   pool_cap_samples: the user's pool cap. A cached index is valid up to this size.
+ *   mem_cap_samples: what free RAM allows right now (0 = no limit). When it is below
+ *     pool_cap_samples the build is decimated to fit and NOT written to the cache, so a
+ *     tight-memory evening never overwrites the full cached corpus.
  *   cache_dir: if non-NULL, an on-disk index cache lives here (keyed by folder path;
- *     validated by a signature over file mtimes/sizes + slicing params). A hit loads
- *     the index directly (skips decode+analysis); a miss analyses then writes the cache.
- *   force_rescan: if non-zero, ignore any cached index and rebuild (still rewrites the cache).
- *   progress: optional 0..100 counter updated as files are processed.
- * Returns a heap index (free with corpus_index_free), or NULL if no audio / OOM. */
+ *     validated by a signature over file mtimes/sizes + slicing params).
+ *   force_rescan: ignore any cached index and rebuild (still rewrites the cache).
+ *   info: optional report (see above).
+ * Decoding is streamed in windows, so memory stays bounded for any file length.
+ * Returns a heap index (free with corpus_index_free), or NULL (see info->err). */
 corpus_index_t *corpus_index_build(const char *folder, int sr,
                                    int slice_mode, int min_len, int max_len,
-                                   float sil_gate, int pool_cap_samples,
+                                   float sil_gate, int pool_cap_samples, int mem_cap_samples,
                                    const char *cache_dir, int force_rescan,
-                                   volatile int *progress);
+                                   corpus_build_info_t *info);
+
+/* MemAvailable in MB from /proc/meminfo (0 if unreadable). Worker threads only. */
+long corpus_mem_available_mb(void);
 
 void corpus_index_free(corpus_index_t *ix);
 

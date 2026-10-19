@@ -15,7 +15,7 @@ MSYS_NO_PATHCONV=1 docker run --rm -v "$ROOT:/build" schwung-concat-builder \
     -I/build/src/dsp \
     -o /build/dist/concat/dsp.so \
     /build/src/dsp/*.c \
-    -lm -lpthread'
+    -lm -lpthread -ldl'
 
 cp "$ROOT/src/module.json" "$ROOT/dist/$MODULE_ID/"
 [ -f "$ROOT/src/help.json" ]   && cp "$ROOT/src/help.json"   "$ROOT/dist/$MODULE_ID/"
