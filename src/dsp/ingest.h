@@ -12,6 +12,8 @@
 #ifndef CONCAT_INGEST_H
 #define CONCAT_INGEST_H
 
+#include <stddef.h>
+
 #define INGEST_MAX_FOLDERS 96
 #define INGEST_PATH        512
 
@@ -39,6 +41,11 @@ typedef struct ingest_reader ingest_reader_t;
 
 /* Open a file for streamed mono decode at target_sr. NULL if it cannot be decoded. */
 ingest_reader_t *ingest_open(const char *path, int target_sr);
+
+/* Same, decoding from a memory buffer that must outlive the reader. `name` is only
+ * used for its extension (.flac/.mp3 pick those decoders; anything else tries WAV/AIFF).
+ * Used by the browser build (Corpus Builder). */
+ingest_reader_t *ingest_open_memory(const void *data, size_t size, const char *name, int target_sr);
 
 /* Read up to max_frames mono frames at the target rate into out.
  * Returns frames written; 0 at end of file. */

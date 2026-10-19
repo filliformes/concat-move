@@ -403,7 +403,7 @@ static void corpus_write_scatter_bmp(corpus_index_t *ix, const char *cache_dir, 
     }
 }
 
-#define WIN_SECONDS    60     /* streamed decode window (10.6 MB of floats at 44.1k) */
+#define WIN_SECONDS    CONCAT_WIN_SECONDS
 #define MEM_FLOOR_MB   150    /* stop adding files if free RAM drops below this mid-build */
 
 /* ── Per-file descriptor cache ───────────────────────────────────────────────
@@ -525,6 +525,7 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
         slice_mode = spec.slice_mode;
         min_len = (int)((long)spec.min_ms * sr / 1000);
         max_len = (int)((long)spec.max_ms * sr / 1000);
+        if (spec.has_gate) sil_gate = spec.sil_gate;
     }
 
     /* Fast path: an on-disk cache whose signature still matches -> load, skip analysis.

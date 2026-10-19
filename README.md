@@ -18,6 +18,7 @@ I made it to fill an actual gap: the other granular modules in the Move catalog 
 - [Requirements](#requirements)
 - [Install](#install)
 - [Quickstart](#quickstart)
+- [Corpus files and the Corpus Builder](#corpus-files-and-the-corpus-builder)
 - [Play modes](#play-modes)
 - [The pages: full knob reference](#the-pages-full-knob-reference)
 - [Pads and expression](#pads-and-expression)
@@ -86,6 +87,53 @@ Then power-cycle the Move.
 From there, shape the sound on the Grain / Shape / Out pages.
 
 > If analysis feels slow on a huge library, lower **Pool** (Corpus page) or pick a smaller sub-folder. The result is cached per folder, so re-picking the same folder loads in milliseconds.
+
+---
+
+## Corpus files and the Corpus Builder
+
+A corpus does not have to be one folder. A `.concat` file lists several folders and files, can keep only part of a sample, and can choose which descriptors Concat uses. Pick it in the **Source** browser like any sample.
+
+### The Corpus Builder (web page)
+
+With the Move on your network (or USB), open this in a desktop browser:
+
+```
+http://move.local:7700/api/remote-ui/module-assets/concat/builder/app.html
+```
+
+- **Library** (left): your `UserLibrary`. Drag a folder or a sample onto the corpus list, or use **+**. **▶** plays a sample.
+- **Corpus sources** (middle): click a source to edit it. A sample shows its waveform: drag on it to keep only that part. A folder takes **Only** / **Skip** name patterns (`*Kick*`, `*click*`) and a subfolders switch. **✕** removes a source from the corpus; the file stays on the Move.
+- **Slicing** (bottom): the same onset/fixed slicing as the Corpus page, saved into the file.
+- **Map** (right): every slice of the corpus, placed by PCA of the chosen descriptors. Drag to rotate, wheel to zoom, click a dot to hear that slice. **Move view** shows the 2-D plane the **Learned** map uses on the Move.
+- **Descriptors** tab: min, median, IQR and a histogram for each of the 36 descriptors, a checkbox per group, and how much each one shapes the map.
+- **Save** writes `UserLibrary/Corpora/<name>.concat`. **Open** loads one back. Unsaved work survives a page reload.
+
+The page runs Concat's own decoder, slicer and descriptor code, compiled to WebAssembly, in your browser. The Move does no work while you edit. Checked on real samples: same slice boundaries as the Move, descriptors within 0.06% of each descriptor's spread. A saved test corpus of 9214 slices built to exactly 9214 slices on the device. Analysis results are cached in the browser, so reopening a corpus is instant.
+
+### On the Move
+
+- If the loaded `.concat` file changes (saved from the page, or edited by hand), Concat rebuilds it in the background while the old corpus keeps playing. Only new or changed files are analysed again: an edit to a 9170-slice corpus went live in 8.6 s instead of 76 s.
+- A broken or missing file keeps the old corpus and says why on the View page (`bad JSON: ..., kept old`). Missing sources are skipped and counted (`2 sources missing`).
+
+### The file format
+
+```json
+{
+  "concat": 1,
+  "name": "Night Market",
+  "sources": [
+    { "path": "Samples/Ahuntsic_Ambiances" },
+    { "path": "Samples/MELLOTRON/M300SaxB-20.wav", "start": 0.4, "end": 6.2 },
+    { "path": "Samples/DRUMS", "include": ["*Kick*"], "recurse": false }
+  ],
+  "exclude": ["*click*"],
+  "descriptors": { "use": ["loud", "centroid", "flatness", "pitch", "mfcc1-13"] },
+  "slicing": { "mode": "onset", "min_ms": 40, "max_ms": 600, "gate": 0.02 }
+}
+```
+
+Paths are relative to `/data/UserData/UserLibrary`. `start`/`end` are seconds. Patterns match file names, ignoring case; the top-level `exclude` applies to folder sources. Descriptor groups: `loud`, `centroid`, `flatness`, `zcr`, `pitch`, `mfcc`, `mfccN`, `mfccA-B`. `slicing` overrides the Corpus page knobs. Every key except `sources` is optional.
 
 ---
 
@@ -228,6 +276,7 @@ Needs Docker (for the aarch64 cross-compile) and SSH access to the Move.
 ./scripts/build.sh      # Docker ARM64 cross-compile -> dist/concat/dsp.so + concat-module.tar.gz
 ./scripts/install.sh    # scp to the Move, fix ownership, chmod +x
 ./scripts/test.sh       # cross-compile and run the unit test suite on-device
+./scripts/build_wasm.sh # rebuild src/builder/cb.js (Corpus Builder analysis core) after changing analysis/corpus/ingest
 ```
 
 After deploying, reload with `restart-move.sh` on the device, then power-cycle the Move (the module manifest is cached at startup).
@@ -246,17 +295,21 @@ src/
     corpus_engine.{c,h}# folder -> pool + index; disk cache; k-means; PCA; OOM eviction
     query.{c,h}        # kNN selection, repeat-avoid, concatenation-cost
     grain.{c,h}        # grain cloud: scheduling, windows, looping read
-    ingest.{c,h}       # dr_libs decode, resample, recursive folder scan
+    ingest.{c,h}       # dr_libs decode (streamed), resample, recursive folder scan
+    corpus_file.{c,h}  # .concat corpus files: sources, ranges, patterns, descriptor mask
+    json.{c,h}         # small JSON reader for .concat files
     vendor/            # dr_wav / dr_flac / dr_mp3 (public domain)
+  wasm/cb_wasm.c       # Corpus Builder analysis entry points (built to WebAssembly)
+  builder/             # Corpus Builder web page (app.html, builder.js, map3d.js, worker.js, cb.js)
 scripts/               # build.sh, install.sh, test.sh, Dockerfile
-tests/                 # on-device unit tests (analysis, corpus, engine, ingest, query)
+tests/                 # unit tests (analysis, corpus, corpusfile, engine, ingest, query), session simulator, builder parity
 ```
 
 ---
 
 ## Troubleshooting
 
-- **Analyze stuck at 0%:** the folder has no decodable audio at that path, or the pick did not register. Re-select a file (not a folder) in the Source browser. Very large single files (over 128 MB) are skipped.
+- **Analyze stuck at 0%:** the folder has no decodable audio at that path, or the pick did not register. Re-select a file (not a folder) in the Source browser. The View page's status line says what went wrong (`no audio files`, `out of memory, kept old`, ...).
 - **Slow first analysis:** expected for big libraries. Lower **Pool** or pick a sub-folder. It is cached afterward, so it is instant on re-pick. Hit **Rescan** to force a rebuild after changing files.
 - **Source shows "float 0.00-1.00" or "None":** the module metadata did not load. Power-cycle the Move.
 - **No sound:** check Play Mode and Volume, confirm Analyze reached 100%, and that a note/pad is held (Notes) or X/Y is on a populated region (Map).

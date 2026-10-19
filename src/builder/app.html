@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Concat Corpus Builder</title>
+<style>
+:root {
+  --bg: #f4f3ef; --panel: #ffffff; --panel2: #f9f8f5; --line: #dedbd2; --ink: #1d1c1a; --ink2: #6b675e;
+  --accent: #c2410c; --accent-ink: #ffffff; --ok: #15803d; --bad: #b91c1c; --sel: #fff1e6; --hover: #f1efe9;
+  --wave: #8a857a; --wave-sel: #c2410c; --map-axis: #b9b4a8; --map-ink: #1d1c1a;
+  --radius: 6px; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #151514; --panel: #1d1d1b; --panel2: #232321; --line: #34332f; --ink: #ecebe6; --ink2: #9c988d;
+    --accent: #f97316; --accent-ink: #1a1a18; --ok: #4ade80; --bad: #f87171; --sel: #3a2a1c; --hover: #2a2a27;
+    --wave: #7d786d; --wave-sel: #f97316; --map-axis: #4a4842; --map-ink: #ecebe6;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #151514; --panel: #1d1d1b; --panel2: #232321; --line: #34332f; --ink: #ecebe6; --ink2: #9c988d;
+  --accent: #f97316; --accent-ink: #1a1a18; --ok: #4ade80; --bad: #f87171; --sel: #3a2a1c; --hover: #2a2a27;
+  --wave: #7d786d; --wave-sel: #f97316; --map-axis: #4a4842; --map-ink: #ecebe6;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { display: flex; flex-direction: column; }
+body { background: var(--bg); color: var(--ink); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+button, input, select { font: inherit; color: inherit; }
+button { background: var(--panel2); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 10px; cursor: pointer; }
+button:hover { background: var(--hover); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+button.icon { padding: 2px 6px; min-width: 26px; }
+button:disabled { opacity: .45; cursor: default; }
+input[type=text], input[type=number], select { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 3px 6px; }
+input[type=number] { width: 76px; }
+.muted { color: var(--ink2); }
+.mono { font-family: var(--mono); font-size: 12px; }
+
+header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel); flex: none; }
+header h1 { font-size: 14px; margin: 0 8px 0 0; font-weight: 700; letter-spacing: .02em; }
+header .name { width: 220px; font-weight: 600; }
+header .spacer { flex: 1; }
+#status { color: var(--ink2); flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#status.bad { color: var(--bad); } #status.ok { color: var(--ok); }
+
+main { display: grid; grid-template-columns: minmax(220px, 280px) minmax(320px, 1fr) minmax(360px, 1.15fr); flex: 1; min-height: 0; }
+section { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
+section:last-child { border-right: 0; }
+.head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); background: var(--panel2); font-weight: 600; }
+.head .grow { flex: 1; }
+.scroll { overflow: auto; min-height: 0; flex: 1; }
+
+/* library */
+#crumbs { padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--ink2); }
+#crumbs a { color: var(--ink); cursor: pointer; text-decoration: none; }
+#crumbs a:hover { text-decoration: underline; }
+.lib-row { display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 10px; cursor: default; user-select: none; }
+.lib-row:hover { background: var(--hover); }
+.lib-row .nm { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.lib-row .ic { width: 16px; text-align: center; color: var(--ink2); }
+.lib-row.dir .nm { font-weight: 500; }
+.lib-row button { visibility: hidden; padding: 0 6px; }
+.lib-row:hover button { visibility: visible; }
+
+/* corpus */
+#drop { margin: 10px; border: 1.5px dashed var(--line); border-radius: var(--radius); padding: 14px; text-align: center; color: var(--ink2); }
+#drop.over, #sources.over { border-color: var(--accent); background: var(--sel); }
+.src { display: grid; grid-template-columns: 10px 1fr auto; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.src:hover { background: var(--hover); }
+.src.sel { background: var(--sel); }
+.src .chip { width: 10px; height: 10px; border-radius: 3px; }
+.src .t { overflow: hidden; }
+.src .t div { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.src .sub { color: var(--ink2); font-size: 12px; }
+.src.missing .t div:first-child { color: var(--bad); }
+.src .acts { display: flex; gap: 4px; }
+
+#editor { border-top: 1px solid var(--line); background: var(--panel); padding: 10px; display: none; }
+#editor.on { display: block; }
+#editor .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+#wave { width: 100%; height: 120px; display: block; background: var(--panel2); border: 1px solid var(--line); border-radius: var(--radius); cursor: crosshair; touch-action: none; }
+#folderFiles { max-height: 180px; overflow: auto; margin-top: 8px; border: 1px solid var(--line); border-radius: var(--radius); }
+#folderFiles .lib-row { padding-left: 8px; }
+#folderFiles .lib-row.off .nm { text-decoration: line-through; color: var(--ink2); }
+
+#slicing { border-top: 1px solid var(--line); padding: 8px 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; background: var(--panel2); }
+#slicing label { display: flex; gap: 4px; align-items: center; color: var(--ink2); }
+#progress { height: 3px; background: transparent; }
+#progress div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+
+/* right: tabs */
+.tabs { display: flex; gap: 2px; }
+.tabs button { border-radius: var(--radius) var(--radius) 0 0; border-bottom: 0; }
+.tabs button.on { background: var(--panel); border-color: var(--line); color: var(--accent); }
+#mapWrap { position: relative; flex: 1; min-height: 0; background: var(--panel); }
+#map { width: 100%; height: 100%; display: block; touch-action: none; }
+#mapTip { position: absolute; left: 10px; bottom: 10px; right: 10px; color: var(--ink2); font-size: 12px; pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#mapEmpty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--ink2); text-align: center; padding: 20px; }
+#summary { display: flex; gap: 14px; padding: 8px 10px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+#summary b { font-variant-numeric: tabular-nums; }
+
+#desc table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+#desc th, #desc td { padding: 4px 8px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+#desc th { position: sticky; top: 0; background: var(--panel2); font-weight: 600; z-index: 1; }
+#desc td:first-child, #desc th:first-child { text-align: left; }
+#desc tr.grp td { background: var(--panel2); font-weight: 600; }
+#desc tr.off td { color: var(--ink2); }
+#desc canvas { display: block; }
+.share { display: inline-block; height: 8px; background: var(--accent); border-radius: 2px; vertical-align: middle; }
+
+dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--ink); padding: 0; min-width: 340px; max-width: 92vw; }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+dialog .head { border-radius: 10px 10px 0 0; }
+dialog .body { padding: 10px; max-height: 60vh; overflow: auto; }
+dialog .foot { padding: 10px; display: flex; gap: 8px; justify-content: flex-end; border-top: 1px solid var(--line); }
+
+@media (max-width: 900px) {
+  body { display: block; }
+  header { flex-wrap: wrap; }
+  main { grid-template-columns: 1fr; }
+  section { border-right: 0; border-bottom: 1px solid var(--line); min-height: 50vh; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Concat Corpus Builder</h1>
+  <input class="name" id="name" type="text" value="Untitled" aria-label="Corpus name" spellcheck="false">
+  <button id="btnNew">New</button>
+  <button id="btnOpen">Open…</button>
+  <button id="btnSave" class="primary">Save</button>
+  <span id="status"></span>
+  <button id="btnTheme" class="icon" title="Light / dark">◐</button>
+</header>
+<main>
+  <section id="libCol">
+    <div class="head"><span class="grow">Library</span><button id="btnUp" class="icon" title="Up one folder">↑</button></div>
+    <div id="crumbs"></div>
+    <div class="scroll" id="lib"></div>
+  </section>
+
+  <section id="corpusCol">
+    <div class="head"><span class="grow">Corpus sources</span><span class="muted" id="srcCount"></span></div>
+    <div class="scroll" id="sources">
+      <div id="drop">Drag samples or folders here from the library</div>
+    </div>
+    <div id="editor"></div>
+    <div id="slicing">
+      <label>Slicing <select id="slMode"><option value="onset">Onsets</option><option value="fixed">Fixed grains</option></select></label>
+      <label>Min <input id="slMin" type="number" min="5" max="2000" step="5"> ms</label>
+      <label>Max <input id="slMax" type="number" min="5" max="2000" step="10"> ms</label>
+      <label>Gate <input id="slGate" type="number" min="0" max="1" step="0.01"></label>
+    </div>
+    <div id="progress"><div></div></div>
+  </section>
+
+  <section id="rightCol">
+    <div class="head">
+      <div class="tabs"><button id="tabMap" class="on">Map</button><button id="tabDesc">Descriptors</button></div>
+      <span class="grow"></span>
+      <button id="btnMoveView" title="The 2-D Learned map Concat plays on the Move">Move view</button>
+      <button id="btnOrbit" title="Tilted 3-D view">3D</button>
+    </div>
+    <div id="summary"></div>
+    <div id="mapWrap">
+      <canvas id="map"></canvas>
+      <div id="mapEmpty">Add sources to see the corpus map.<br>Each dot is a slice; click one to hear it.</div>
+      <div id="mapTip"></div>
+    </div>
+    <div class="scroll" id="desc" hidden></div>
+  </section>
+</main>
+
+<dialog id="dlgOpen">
+  <div class="head"><span class="grow">Open a corpus</span></div>
+  <div class="body" id="openList"></div>
+  <div class="foot"><button id="openCancel">Cancel</button></div>
+</dialog>
+
+<script src="map3d.js"></script>
+<script src="builder.js"></script>
+</body>
+</html>

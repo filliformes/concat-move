@@ -13,7 +13,7 @@
  *     ],
  *     "exclude": ["*click*"],
  *     "descriptors": { "use": ["loud", "centroid", "flatness", "pitch", "mfcc1-13"] },
- *     "slicing": { "mode": "onset", "min_ms": 40, "max_ms": 600 }
+ *     "slicing": { "mode": "onset", "min_ms": 40, "max_ms": 600, "gate": 0.02 }
  *   }
  * Relative paths are under /data/UserData/UserLibrary. Globs match file names, case
  * insensitive. Top-level "exclude" applies to folder sources. A missing source is
@@ -41,6 +41,8 @@ typedef struct {
     int    has_slicing;        /* the file overrides the Corpus-page slicing knobs */
     int    slice_mode;         /* 0 onset, 1 fixed */
     int    min_ms, max_ms;
+    int    has_gate;           /* slicing.gate given: overrides the Silence Gate knob */
+    float  sil_gate;
     int    has_mask;           /* descriptors.use given */
     float  mask[NDESC];        /* 1 = descriptor used, 0 = ignored (zeroed in query space) */
     int    unknown_desc;       /* names in descriptors.use that matched nothing */

@@ -202,27 +202,9 @@ static void rd_refill(ingest_reader_t *r, long long keep_from) {
     r->src_read += (long long)got;
 }
 
-ingest_reader_t *ingest_open(const char *path, int target_sr) {
-    if (!path || target_sr <= 0) return NULL;
-    ingest_reader_t *r = (ingest_reader_t *)calloc(1, sizeof(*r));
-    if (!r) return NULL;
-    const char *ext = strrchr(path, '.');
-    int ok = 0;
-    if (ext && !strcasecmp(ext, ".flac")) {
-        r->flac = drflac_open_file(path, NULL);
-        if (r->flac) { ok = 1; r->kind = RD_FLAC; r->ch = r->flac->channels; r->sr = r->flac->sampleRate;
-                       r->total = r->flac->totalPCMFrameCount; }
-    } else if (ext && !strcasecmp(ext, ".mp3")) {
-        if (drmp3_init_file(&r->mp3, path, NULL)) {
-            ok = 1; r->kind = RD_MP3; r->ch = r->mp3.channels; r->sr = r->mp3.sampleRate; r->total = 0;
-        }
-    }
-    if (!ok && drwav_init_file(&r->wav, path, NULL)) {      /* WAV, AIFF, RF64, W64; fallback for odd extensions */
-        ok = 1; r->kind = RD_WAV; r->ch = r->wav.channels; r->sr = r->wav.sampleRate;
-        r->total = r->wav.totalPCMFrameCount;
-    }
+/* Shared tail of ingest_open / ingest_open_memory: validate and allocate buffers. */
+static ingest_reader_t *rd_setup(ingest_reader_t *r, int ok, int target_sr) {
     if (!ok || r->ch == 0 || r->ch > 32 || r->sr == 0) { if (ok) ingest_close(r); else free(r); return NULL; }
-
     r->target_sr = target_sr;
     r->step = (double)r->sr / (double)target_sr;
     r->mono_cap = RD_CHUNK + 8;
@@ -230,6 +212,37 @@ ingest_reader_t *ingest_open(const char *path, int target_sr) {
     r->mono = (float *)malloc(sizeof(float) * (size_t)r->mono_cap);
     if (!r->ibuf || !r->mono) { ingest_close(r); return NULL; }
     return r;
+}
+
+/* Open from a file path or, when data != NULL, from memory (`name` gives the extension). */
+static ingest_reader_t *rd_open(const char *path, const void *data, size_t size, int target_sr) {
+    if (!path || target_sr <= 0) return NULL;
+    ingest_reader_t *r = (ingest_reader_t *)calloc(1, sizeof(*r));
+    if (!r) return NULL;
+    const char *ext = strrchr(path, '.');
+    int ok = 0;
+    if (ext && !strcasecmp(ext, ".flac")) {
+        r->flac = data ? drflac_open_memory(data, size, NULL) : drflac_open_file(path, NULL);
+        if (r->flac) { ok = 1; r->kind = RD_FLAC; r->ch = r->flac->channels; r->sr = r->flac->sampleRate;
+                       r->total = r->flac->totalPCMFrameCount; }
+    } else if (ext && !strcasecmp(ext, ".mp3")) {
+        if (data ? drmp3_init_memory(&r->mp3, data, size, NULL) : drmp3_init_file(&r->mp3, path, NULL)) {
+            ok = 1; r->kind = RD_MP3; r->ch = r->mp3.channels; r->sr = r->mp3.sampleRate; r->total = 0;
+        }
+    }
+    if (!ok && (data ? drwav_init_memory(&r->wav, data, size, NULL)
+                     : drwav_init_file(&r->wav, path, NULL))) {   /* WAV, AIFF, RF64, W64; fallback for odd extensions */
+        ok = 1; r->kind = RD_WAV; r->ch = r->wav.channels; r->sr = r->wav.sampleRate;
+        r->total = r->wav.totalPCMFrameCount;
+    }
+    return rd_setup(r, ok, target_sr);
+}
+
+ingest_reader_t *ingest_open(const char *path, int target_sr) { return rd_open(path, NULL, 0, target_sr); }
+
+ingest_reader_t *ingest_open_memory(const void *data, size_t size, const char *name, int target_sr) {
+    if (!data || size == 0) return NULL;
+    return rd_open(name ? name : "", data, size, target_sr);
 }
 
 int ingest_read(ingest_reader_t *r, float *out, int max_frames) {

@@ -41,6 +41,10 @@ typedef struct {
                             * when it changes (pointer compare alone can alias a freed index) */
 } corpus_index_t;
 
+/* Streamed decode window: slicing runs per window from the range start, so this is
+ * part of what makes two analyses identical (device build and Corpus Builder). */
+#define CONCAT_WIN_SECONDS 60
+
 /* ── Build report ────────────────────────────────────────────────────────────
  * Filled by corpus_index_build so the UI can say what happened. Fields marked
  * volatile are updated live while the build runs (read by other threads). */

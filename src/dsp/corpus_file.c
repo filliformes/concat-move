@@ -116,6 +116,13 @@ static int resolve_concat(const char *path, corpus_spec_t *spec, corpus_item_t *
         if (spec->min_ms < 5) spec->min_ms = 5;
         if (spec->max_ms < spec->min_ms) spec->max_ms = spec->min_ms;
         if (spec->max_ms > 2000) spec->max_ms = 2000;
+        const jv_t *g = json_get(sl, "gate");
+        if (g && g->type == JV_NUM) {
+            spec->has_gate = 1;
+            spec->sil_gate = (float)g->num;
+            if (spec->sil_gate < 0.0f) spec->sil_gate = 0.0f;
+            if (spec->sil_gate > 1.0f) spec->sil_gate = 1.0f;
+        }
     }
 
     const jv_t *use = json_get(json_get(root, "descriptors"), "use");
