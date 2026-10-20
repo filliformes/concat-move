@@ -1,5 +1,7 @@
 # Corpus files and the Corpus Builder (design draft, 2026-09-28)
 
+> **Status (2026-10-20):** built and released in v0.2.0. The user-facing description is in [MANUAL.md](MANUAL.md#7-the-corpus-builder); this file keeps the design decisions and the verified schwung-manager facts. Two changes from the draft: the page is `builder/app.html` (the manager redirects `index.html` to a folder URL that returns 404), and the browser decodes audio with Concat's own dr_libs code compiled to WebAssembly instead of `decodeAudioData`, which gives the same samples as the Move and reads AIFF in every browser.
+
 Decisions (from Vincent): JSON `.concat` files, stored in `UserLibrary/Corpora/`,
 per-file descriptor cache with audio re-read on load, and the web tool first.
 

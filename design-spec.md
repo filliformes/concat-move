@@ -1,6 +1,6 @@
 # Concat — Design Spec
 
-> **Status:** Pre-implementation
+> **Status:** Original design (2026-09-01), kept for the reasoning behind it. What shipped is in [docs/MANUAL.md](docs/MANUAL.md) (v0.2.0); some details here changed on the way (for example kissfft became an in-house FFT, and the default Pool Cap and slice limits moved).
 > **Plugin type:** sound_generator (`plugin_api_v2_t`)
 > **Module ID:** `concat`
 > **Abbrev:** `CONCAT`

@@ -56,7 +56,7 @@ analysis-only display.
   kd-tree** (degrades past ~10 dims). Selection = weighted-Euclidean kNN to target, random among K
   within `radius`, **repetition avoidance** = exclude last `repeat_avoid` played slices (CataRT
   "forbidding"). Concatenation-cost = v2.
-- **FFT:** kissfft (BSD-3), locked. 1024-pt, Hann, hop 512. (HISSTools only if NEON throughput needed later.)
+- **FFT:** in-house iterative radix-2 (`analysis.c`), 1024-pt, Hann, hop 512. (Planned as kissfft; replaced before 0.1.0.)
 - **v2 headline:** UMAP/PCA learned 2-D map projection (FluCoMa) replacing raw-descriptor nav axes —
   precomputed at analysis, stored in index → nav-layer swap, not an engine change.
 - **Clean-room DSP reference:** `references/dsp-notes.md` (MFCC=MelBands→DCT-II, centroid/flatness
@@ -66,7 +66,7 @@ analysis-only display.
   centroid + flatness + ZCR (1024-pt FFT, hop 512, 40 mel → log → DCT-II) summarised per slice by
   **mean + std** (std captures morphology); + loudness (mean/peak) + YIN pitch+conf (median voiced).
   Normalise: query = per-dim **RobustScaling** (median/IQR); nav axes = per-corpus min-max→0–1.
-  ~40–80× realtime on CM4. **FFT = kissfft (BSD-3), locked** (never FFTW — GPL/NC conflict).
+  ~40–80× realtime on CM4. **FFT = in-house radix-2** (never FFTW — GPL/NC conflict).
 - **Slicing:** onset (spectral flux) + min/max clamps; fixed-grain fallback.
 - **Voices:** polyphonic grain cloud, target ~16–24 grains, mono corpus → stereo with pan spread.
 - **Grain-lock** window-phase params (grain_size, env) at grain start (avoid clicks).

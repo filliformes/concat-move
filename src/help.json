@@ -98,19 +98,19 @@
     {
       "title": "Scope",
       "lines": [
-        "Corpus > Scope:",
+        "Mod & Set > Scope:",
         "",
-        "Folder (default):",
-        " picked file's",
-        " folder becomes",
-        " the corpus.",
-        "",
-        "File: that one",
-        " sample is the",
-        " whole corpus,",
-        " still onset-",
+        "File (default):",
+        " the picked sample",
+        " is the whole",
+        " corpus, onset-",
         " sliced into many",
-        " pieces."
+        " pieces.",
+        "",
+        "Folder: the picked",
+        " file's folder",
+        " (and subfolders)",
+        " is the corpus."
       ]
     },
     {
@@ -136,7 +136,7 @@
       ]
     },
     {
-      "title": "Map + Mod",
+      "title": "Map + Mod & Set",
       "lines": [
         "Map page:",
         " X/Y Desc pick the",
@@ -146,7 +146,7 @@
         " Learned (PCA plane",
         " of the corpus).",
         "",
-        "Mod page:",
+        "Mod & Set page:",
         " Follow = LFO or",
         " Sequence. Sequence",
         " locks LFO Rate to",

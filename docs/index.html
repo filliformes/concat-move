@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Concat: Manual</title>
+<meta name="description" content="Concat: a corpus concatenative-synthesis instrument for Ableton Move (Schwung). Quickstart, the Corpus Builder web page, and the full reference.">
+<style>
+  :root{
+    --bg:#0e0d0c; --bg2:#141210; --panel:#1a1816; --panel2:#221f1c; --line:#2f2b27;
+    --ink:#efe9e2; --dim:#a79e93; --faint:#6e665d;
+    --accent:#f97316; --accent2:#2dd4bf; --hot:#f43f5e; --yellow:#facc15; --blue:#60a5fa; --violet:#a78bfa;
+    --mono:"SFMono-Regular",ui-monospace,"Cascadia Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:radial-gradient(1200px 800px at 75% -10%,#1f1712 0%,var(--bg) 55%) fixed;color:var(--ink);font-family:var(--sans);line-height:1.6;font-size:16px;-webkit-font-smoothing:antialiased}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  h1,h2,h3{line-height:1.15;letter-spacing:-.01em;font-weight:650}
+  h2{font-size:clamp(1.5rem,3vw,2.1rem);margin:0 0 .3em}
+  h3{font-size:1.12rem;margin:1.6em 0 .4em;color:#fff}
+  p{margin:.6em 0}
+  code,kbd{font-family:var(--mono);font-size:.86em}
+  code{background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:.05em .35em}
+  pre{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;font-size:.84rem;line-height:1.5}
+  pre code{background:none;border:0;padding:0}
+  kbd{background:var(--panel2);border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:.06em .42em;color:#fff;white-space:nowrap;font-size:.8em}
+  .wrap{display:grid;grid-template-columns:200px minmax(0,1fr)}
+  nav{position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;padding:24px 10px 40px 14px;border-right:1px solid var(--line)}
+  nav .brand{font-weight:750;font-size:1.2rem;letter-spacing:.02em;margin-bottom:2px}
+  nav .brand b{color:var(--accent)}
+  nav .tag{color:var(--faint);font-size:.72rem;text-transform:uppercase;letter-spacing:.14em;margin-bottom:22px}
+  nav a{display:block;color:var(--dim);padding:5px 10px;border-radius:7px;font-size:.9rem}
+  nav a:hover{color:var(--ink);background:var(--panel);text-decoration:none}
+  nav a.sub{padding-left:22px;font-size:.82rem;color:var(--faint)}
+  main{padding:0 clamp(18px,4vw,56px) 120px;min-width:0;max-width:1120px}
+  section{padding:46px 0 8px;border-top:1px solid var(--line)}
+  .lede{color:var(--dim);font-size:1.05rem;max-width:90ch}
+  .eyebrow{color:var(--accent);font-family:var(--mono);font-size:.74rem;letter-spacing:.18em;text-transform:uppercase;margin-bottom:.7em}
+  .hero{padding:70px 0 30px;border:none}
+  .hero h1{font-size:clamp(2.8rem,8vw,4.8rem);margin:.1em 0 .15em;letter-spacing:-.03em;background:linear-gradient(120deg,#fff 15%,var(--accent) 55%,var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .sub{font-size:clamp(1.05rem,2.4vw,1.35rem);color:var(--dim);max-width:68ch}
+  .pills{display:flex;flex-wrap:wrap;gap:6px;margin:22px 0 6px}
+  .pill{background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:4px 10px;font-size:.76rem;color:var(--dim);white-space:nowrap}
+  .pill b{color:var(--accent)}
+  .cta{display:flex;flex-wrap:wrap;gap:10px;margin:26px 0 8px}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:10px 16px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-weight:600;font-size:.95rem}
+  .btn:hover{text-decoration:none;border-color:var(--accent)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#1a0d04}
+  .btn small{font-weight:400;color:inherit;opacity:.75}
+  .grid{display:grid;gap:14px;margin:18px 0}
+  .g2{grid-template-columns:1fr 1fr}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .card{background:linear-gradient(180deg,var(--panel),var(--bg2));border:1px solid var(--line);border-radius:14px;padding:18px 20px}
+  .card h3{margin-top:0}
+  .card.k{border-left:3px solid var(--accent)}
+  .card.t{border-left:3px solid var(--accent2)}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:.9rem}
+  th,td{text-align:left;padding:8px 11px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--panel2);color:var(--dim);font-weight:600;font-size:.76rem;text-transform:uppercase;letter-spacing:.06em}
+  td:first-child{white-space:nowrap}
+  td b{color:#fff}
+  .tablewrap{overflow-x:auto}
+  ol.steps{counter-reset:s;list-style:none;padding:0;margin:18px 0}
+  ol.steps li{counter-increment:s;position:relative;padding:12px 14px 12px 54px;margin:8px 0;background:var(--panel);border:1px solid var(--line);border-radius:12px}
+  ol.steps li::before{content:counter(s);position:absolute;left:14px;top:11px;width:28px;height:28px;border-radius:50%;background:var(--accent);color:#1a0d04;font-weight:750;display:flex;align-items:center;justify-content:center;font-size:.9rem}
+  .note{border-left:3px solid var(--accent2);background:var(--panel);padding:10px 14px;border-radius:0 10px 10px 0;color:var(--dim);margin:14px 0}
+  .note b{color:var(--ink)}
+  /* the Move screen */
+  .screenbox{display:flex;flex-direction:column;align-items:center;gap:8px;margin:16px 0}
+  svg.screen{width:min(100%,512px);height:auto;background:#000;border-radius:8px;border:6px solid #1c1c1c;box-shadow:0 0 0 1px #333,0 20px 50px rgba(0,0,0,.5);image-rendering:pixelated}
+  .caption{color:var(--faint);font-size:.82rem;text-align:center;max-width:60ch}
+  /* builder sketch */
+  .bmock{display:grid;grid-template-columns:1fr 1.3fr 1.5fr;gap:8px;background:#14110f;border:1px solid var(--line);border-radius:14px;padding:10px;font-size:.72rem;color:var(--dim)}
+  .bmock .bar{grid-column:1/-1;display:flex;gap:6px;align-items:center;padding:4px 6px;border-bottom:1px solid var(--line)}
+  .bmock .bar b{color:var(--ink);margin-right:8px}
+  .bmock .chip{border:1px solid var(--line);border-radius:6px;padding:1px 7px}
+  .bmock .chip.o{background:var(--accent);color:#1a0d04;border-color:var(--accent)}
+  .bmock .chip.b{border-radius:999px}
+  .bmock .col{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px;min-height:190px}
+  .bmock .col h4{margin:0 0 6px;font-size:.72rem;color:var(--ink);font-weight:650;text-transform:uppercase;letter-spacing:.08em}
+  .bmock .row{padding:3px 4px;border-radius:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .bmock .row.sel{background:#3a2a1c;color:var(--ink)}
+  .bmock .sw{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px}
+  .bmock .wave{height:34px;margin-top:6px;border-radius:6px;background:repeating-linear-gradient(90deg,#7d786d 0 1px,transparent 1px 3px);mask:linear-gradient(180deg,transparent 0,#000 35%,#000 65%,transparent 100%);position:relative}
+  .bmock .wave::after{content:"";position:absolute;left:22%;right:40%;top:0;bottom:0;background:rgba(249,115,22,.35);border-left:2px solid var(--accent);border-right:2px solid var(--accent)}
+  .bmock canvas{width:100%;height:170px;display:block}
+  .pipeline{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:16px 0}
+  .pipeline .st{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 12px;font-size:.85rem}
+  .pipeline .st b{display:block;color:#fff;font-size:.9rem}
+  .pipeline .ar{color:var(--faint)}
+  .cheat td:first-child{color:var(--accent);font-family:var(--mono);font-size:.82rem}
+  footer{color:var(--faint);font-size:.85rem;margin-top:60px}
+  @media (max-width:900px){
+    .wrap{grid-template-columns:1fr}
+    nav{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:2px;padding:14px}
+    nav .brand,nav .tag{width:100%}
+    nav .tag{margin-bottom:8px}
+    nav a.sub{display:none}
+    .g2,.g3{grid-template-columns:1fr}
+    .bmock{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <div class="brand"><b>Concat</b></div>
+  <div class="tag">Manual · v0.2.0</div>
+  <a href="#top">Overview</a>
+  <a href="#idea">The idea</a>
+  <a href="#quickstart">Quickstart</a>
+  <a href="#screen">The View page</a>
+  <a href="#modes">Play modes</a>
+  <a href="#pages">The pages</a>
+  <a class="sub" href="#p-root">Root</a>
+  <a class="sub" href="#p-corpus">Corpus</a>
+  <a class="sub" href="#p-map">Map</a>
+  <a class="sub" href="#p-mod">Mod &amp; Set</a>
+  <a class="sub" href="#p-grain">Grain</a>
+  <a class="sub" href="#p-shape">Shape</a>
+  <a class="sub" href="#p-play">Play</a>
+  <a class="sub" href="#p-out">Out</a>
+  <a href="#pads">Pads &amp; MIDI</a>
+  <a href="#recipes">Recipes</a>
+  <a href="#builder">Corpus Builder</a>
+  <a class="sub" href="#b-open">Open it</a>
+  <a class="sub" href="#b-build">Build a corpus</a>
+  <a class="sub" href="#b-map">Hear the map</a>
+  <a class="sub" href="#b-save">Save &amp; load</a>
+  <a href="#files">Corpus files</a>
+  <a href="#remote">Remote UI panel</a>
+  <a href="#memory">Memory &amp; caches</a>
+  <a href="#install">Install</a>
+  <a href="#trouble">Troubleshooting</a>
+  <a href="#cheat">Cheat sheet</a>
+  <a href="#credits">Credits</a>
+</nav>
+<main>
+
+<section class="hero" id="top">
+  <div class="eyebrow">Ableton Move · Schwung sound generator</div>
+  <h1>Concat</h1>
+  <p class="sub">A corpus synthesizer. Point it at samples, it cuts them into slices, measures each one, and lays them out on a map of timbre. Then you play the map.</p>
+  <div class="pills">
+    <span class="pill"><b>36</b> descriptors per slice</span>
+    <span class="pill"><b>3</b> play modes: Notes, Map, Mosaic</span>
+    <span class="pill"><b>16</b> pad clusters</span>
+    <span class="pill">corpus files with live reload</span>
+    <span class="pill">web Corpus Builder</span>
+    <span class="pill">Schwung <b>1.3.0+</b></span>
+  </div>
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/filliformes/concat-move/releases/latest">Download <small>latest release</small></a>
+    <a class="btn" href="#b-open">Open the Corpus Builder <small>on your Move</small></a>
+    <a class="btn" href="https://github.com/filliformes/concat-move">GitHub</a>
+  </div>
+  <p class="lede">I made Concat because the granular modules on the Move each read one buffer. Concat reads a whole sample library at once: you travel through timbre across many files, or sing into it and hear your voice rebuilt from the corpus.</p>
+</section>
+
+<section id="idea">
+  <div class="eyebrow">The idea</div>
+  <h2>A map of sounds, not a timeline</h2>
+  <p class="lede">Every slice gets measured: how bright, how noisy, how loud, what pitch, what timbre (13 MFCCs), each as an average and a variation over the slice. That puts every slice at a point in a 36-dimensional space. Concat flattens it to a 2-D map and plays a cloud of grains from the slices nearest your position.</p>
+  <div class="pipeline">
+    <div class="st"><b>Decode</b>WAV · AIFF · FLAC · MP3</div><span class="ar">→</span>
+    <div class="st"><b>Slice</b>at onsets, 20 ms to 2 s</div><span class="ar">→</span>
+    <div class="st"><b>Describe</b>36 numbers per slice</div><span class="ar">→</span>
+    <div class="st"><b>Map</b>Raw axes or Learned (PCA)</div><span class="ar">→</span>
+    <div class="st"><b>Play</b>nearest slices as grains</div>
+  </div>
+  <div class="grid g3">
+    <div class="card k"><h3>A corpus</h3><p>One sample, one folder, or a <code>.concat</code> file that gathers many folders and samples, trimmed and filtered.</p></div>
+    <div class="card k"><h3>A position</h3><p>X and Y on the map, moved by knobs, the LFO, a note (Zone), a held pad (clusters), or your voice (Mosaic).</p></div>
+    <div class="card k"><h3>A cloud</h3><p>Grains at a density you set, each a slice near the position, never the same one twice in a row, flowing from the last.</p></div>
+  </div>
+</section>
+
+<section id="quickstart">
+  <div class="eyebrow">Quickstart</div>
+  <h2>First sound in a minute</h2>
+  <ol class="steps">
+    <li>In Schwung, add <b>Concat</b> to a track. A new Concat loads the first sample of your first Samples folder by itself.</li>
+    <li>To choose your own: open <b>Corpus</b> from the root menu, select <b>Source</b> (knob 1), press the jog wheel, and pick a sample, or a <code>.concat</code> file from <code>Corpora</code>.</li>
+    <li><b>Scope</b> (on <b>Mod &amp; Set</b>) decides what a picked sample means: <b>File</b> (default) makes that sample the whole corpus, cut into many slices; <b>Folder</b> takes its whole folder.</li>
+    <li>Wait for <b>Analyze</b> to reach 100 %. A big folder takes a minute the first time; after that it loads from the cache.</li>
+    <li>Play the pads. Each pad plays a different part of the corpus.</li>
+    <li>Open <b>View</b>: see the map, and turn the jog wheel through the <b>Recipes</b>. Try <b>Cloud</b>, then <b>Drone</b>.</li>
+  </ol>
+  <div class="note"><b>Next:</b> build a corpus from several folders in the <a href="#builder">Corpus Builder</a>, trim the samples, hear its map in the browser, and load it onto the Move from there.</div>
+</section>
+
+<section id="screen">
+  <div class="eyebrow">The View page</div>
+  <h2>The corpus on the Move's screen</h2>
+  <div class="screenbox">
+    <svg class="screen" id="oled" viewBox="0 0 128 64" shape-rendering="crispEdges" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Concat's View page: a scatter of slices, the play position ring and a trail"></svg>
+    <div class="caption">Each dot is a slice. The ring is your position and radius; the small trail is the last slices played. The recipe name and its number sit on top; the bottom line names the knob you touch or says what the analysis is doing.</div>
+  </div>
+  <div class="grid g2">
+    <div class="card t"><h3>Knobs on View</h3><p>X Position, Y Position, Radius, Density, Grain Size, K Nearest, Smooth, Filter: everything you need to move around without leaving the map.</p></div>
+    <div class="card t"><h3>Status line</h3><p><code>analysing 3/40</code> while it works, then nothing. If something went wrong: <code>out of memory, kept old</code>, <code>bad JSON: ..., kept old</code>, <code>2 sources missing</code>. A failed load never stops the corpus that is playing.</p></div>
+  </div>
+</section>
+
+<section id="modes">
+  <div class="eyebrow">Play modes</div>
+  <h2>Three ways in</h2>
+  <div class="grid g3">
+    <div class="card k"><h3>Notes <small style="color:var(--faint)">(default)</small></h3><p>Polyphonic: each pad is a voice with its own envelope. <b>Note Match</b>: <b>Zone</b> puts each pad somewhere else on the map, at natural pitch. <b>Pitch</b> picks the nearest-pitched slice and retunes it. <b>Off</b> plays the current position, retuned.</p></div>
+    <div class="card k"><h3>Map</h3><p>Move the position with X/Y, or let <b>Follow</b> do it (LFO, or Sequence on the MIDI clock). Hold a pad to jump to one of 16 timbre clusters; let go to come back.</p></div>
+    <div class="card k"><h3>Mosaic</h3><p>Concat listens to the line/mic input about every 23 ms and answers with the nearest slices. Beatbox into drums, hum into field recordings. <b>Dry Mix</b> blends your input in.</p></div>
+  </div>
+</section>
+
+<section id="pages">
+  <div class="eyebrow">Reference</div>
+  <h2>The pages</h2>
+  <p class="lede">The root page holds 8 performance knobs. The menu below it opens <b>View · Corpus · Map · Mod &amp; Set · Grain · Shape · Play · Out</b>.</p>
+
+  <h3 id="p-root">Root</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Knob</th><th>Param</th><th>What it does</th></tr>
+    <tr><td>K1 · K2</td><td><b>X / Y Position</b></td><td>Where you are on the map.</td></tr>
+    <tr><td>K3</td><td><b>Density</b></td><td>Grains per second.</td></tr>
+    <tr><td>K4</td><td><b>Grain Size</b></td><td>Grain length.</td></tr>
+    <tr><td>K5 · K6</td><td><b>Amp Attack / Release</b></td><td>Per-note envelope (Notes).</td></tr>
+    <tr><td>K7</td><td><b>Polyphony</b></td><td>Grain voice ceiling.</td></tr>
+    <tr><td>K8</td><td><b>Filter</b></td><td>Bipolar DJ filter: left darker, right thinner.</td></tr>
+  </table></div>
+
+  <h3 id="p-corpus">Corpus</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Param</th><th>Range</th><th>Default</th><th>Notes</th></tr>
+    <tr><td><b>Source</b></td><td>file browser</td><td>auto</td><td>A sample (<code>.wav .aif .aiff .flac .mp3</code>) or a <code>.concat</code> corpus file.</td></tr>
+    <tr><td><b>Pool Cap</b></td><td>16 to 512 MB</td><td>128</td><td>RAM for corpus audio; 128 MB is about 25 minutes of mono. Free RAM can lower it, then Concat keeps an even subset of slices.</td></tr>
+    <tr><td><b>Rescan</b></td><td>trigger</td><td></td><td>Turn right: analyse again from scratch.</td></tr>
+    <tr><td><b>Slice Mode</b></td><td>Onset / Fixed</td><td>Onset</td><td>Cut at attacks, or in even grains of Max Slice.</td></tr>
+    <tr><td><b>Min / Max Slice</b></td><td>20 to 500 / 100 to 2000 ms</td><td>20 / 2000</td><td>Slice length limits.</td></tr>
+    <tr><td><b>Analyze</b></td><td>0 to 100 %</td><td></td><td>Progress, read only.</td></tr>
+    <tr><td><b>Silence Gate</b></td><td>0 to 1</td><td>0.02</td><td>Drops quieter slices.</td></tr>
+  </table></div>
+  <p class="note">A <code>.concat</code> file's own slicing settings replace Slice Mode, Min/Max Slice and Silence Gate.</p>
+
+  <h3 id="p-map">Map</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Param</th><th>Range</th><th>Default</th><th>Notes</th></tr>
+    <tr><td><b>X / Y Descriptor</b></td><td>Bright, Pitch, Loud, Noisy, Rolloff, MFCC1-3</td><td>Bright / Pitch</td><td>The axes in Raw mode.</td></tr>
+    <tr><td><b>X / Y Position</b></td><td>0 to 1</td><td>0.5</td><td>Good targets for the Move's LFOs.</td></tr>
+    <tr><td><b>Map Mode</b></td><td>Raw / Learned</td><td>Raw</td><td><b>Learned</b> uses the two directions along which this corpus varies most (PCA), so it spreads evenly.</td></tr>
+    <tr><td><b>Radius</b></td><td>0 to 1</td><td>0.15</td><td>How far grains may wander from the position.</td></tr>
+    <tr><td><b>K Nearest</b></td><td>1 to 16</td><td>4</td><td>How many nearest slices a grain picks from.</td></tr>
+    <tr><td><b>Repeat Avoid</b></td><td>0 to 16</td><td>4</td><td>Skips the last N slices played.</td></tr>
+  </table></div>
+
+  <h3 id="p-mod">Mod &amp; Set</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Param</th><th>Range</th><th>Default</th><th>Notes</th></tr>
+    <tr><td><b>Follow</b></td><td>Manual / LFO / Sequence</td><td>Manual</td><td>LFO moves the position by itself; Sequence locks it to the MIDI clock.</td></tr>
+    <tr><td><b>LFO Rate</b></td><td>0.01 to 10</td><td>0.2</td><td>Hz with LFO; cycles per beat with Sequence (0.25 = a bar, 2 = an eighth).</td></tr>
+    <tr><td><b>LFO Shape</b></td><td>Circle, SineX, SineY, S&amp;H</td><td>Circle</td><td>S&amp;H with Sequence jumps on the beat.</td></tr>
+    <tr><td><b>Smooth</b></td><td>0 to 1</td><td>0.35</td><td>How much each grain follows on from the last one.</td></tr>
+    <tr><td><b>Pos Jitter</b></td><td>0 to 1</td><td>0.15</td><td>Random start inside the slice.</td></tr>
+    <tr><td><b>Scope</b></td><td>Folder / File</td><td>File</td><td>What a picked sample means: just it, or its whole folder.</td></tr>
+  </table></div>
+
+  <h3 id="p-grain">Grain</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Param</th><th>Range</th><th>Default</th><th>Notes</th></tr>
+    <tr><td><b>Density</b></td><td>1 to 100 g/s</td><td>20</td><td>Grains per second.</td></tr>
+    <tr><td><b>Grain Size</b></td><td>10 to 2000 ms</td><td>120</td><td>Longer than its slice, a grain loops it with a crossfade.</td></tr>
+    <tr><td><b>Grain Env</b></td><td>Hann, Tukey, Tri, Gauss, Expo, RevExpo, Trapez, Black</td><td>Hann</td><td>Window shape.</td></tr>
+    <tr><td><b>Pitch</b></td><td>-24 to +24 st</td><td>0</td><td>Transpose.</td></tr>
+    <tr><td><b>Pan Spread</b></td><td>0 to 1</td><td>0.3</td><td>Random stereo position per grain.</td></tr>
+    <tr><td><b>Grain Random</b></td><td>0 to 1</td><td>0</td><td>Random grain length.</td></tr>
+    <tr><td><b>Reverse</b></td><td>0 to 1</td><td>0</td><td>Chance a grain plays backwards.</td></tr>
+    <tr><td><b>Pitch Jitter</b></td><td>0 to 1</td><td>0</td><td>Random detune per grain.</td></tr>
+  </table></div>
+
+  <h3 id="p-shape">Shape</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Param</th><th>Default</th><th>Notes</th></tr>
+    <tr><td><b>Amp Attack / Decay / Sustain / Release</b></td><td>0.01 / 0.2 / 1 / 0.2</td><td>Per-note envelope (Notes mode). Map and Mosaic play at full level.</td></tr>
+    <tr><td><b>Filter Env</b></td><td>0.45</td><td>Envelope amount on the Filter (0.5 = none).</td></tr>
+    <tr><td><b>Filter Attack / Decay / Sustain</b></td><td>0.01 / 0.3 / 0</td><td>Filter envelope.</td></tr>
+  </table></div>
+
+  <h3 id="p-play">Play</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Param</th><th>Range</th><th>Default</th><th>Notes</th></tr>
+    <tr><td><b>Play Mode</b></td><td>Map / Notes / Mosaic</td><td>Notes</td><td>See <a href="#modes">Play modes</a>.</td></tr>
+    <tr><td><b>Note Match</b></td><td>Off / Pitch / Zone</td><td>Zone</td><td>Notes mode.</td></tr>
+    <tr><td><b>Pressure</b></td><td>Off, Proximity, Density, Bright, Sat, Pitch, Grain, Jitter</td><td>Density</td><td>What pad pressure changes.</td></tr>
+    <tr><td><b>Pressure Amt</b></td><td>0 to 1</td><td>1</td><td></td></tr>
+    <tr><td><b>Velocity Amt</b></td><td>0 to 1</td><td>0.8</td><td>0 ignores velocity.</td></tr>
+    <tr><td><b>Polyphony</b></td><td>1 to 128</td><td>48</td><td>Grain voice ceiling.</td></tr>
+  </table></div>
+
+  <h3 id="p-out">Out</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Param</th><th>Range</th><th>Default</th><th>Notes</th></tr>
+    <tr><td><b>Filter</b></td><td>0 to 1</td><td>0.5</td><td>Centre off, left low-pass down, right high-pass up.</td></tr>
+    <tr><td><b>Resonance</b></td><td>0 to 1</td><td>0</td><td></td></tr>
+    <tr><td><b>Saturation</b></td><td>0 to 1</td><td>0</td><td>tanh drive with make-up gain.</td></tr>
+    <tr><td><b>Dry Mix</b></td><td>0 to 1</td><td>0</td><td>Live input in the mix (Mosaic).</td></tr>
+    <tr><td><b>Volume</b></td><td>0 to 1</td><td>0.8</td><td></td></tr>
+    <tr><td><b>Width</b></td><td>0 to 1</td><td>1</td><td>Stereo width.</td></tr>
+    <tr><td><b>Level Norm</b></td><td>0 to 1</td><td>0.5</td><td>Evens out slices from different recordings.</td></tr>
+  </table></div>
+</section>
+
+<section id="pads">
+  <div class="eyebrow">Pads &amp; MIDI</div>
+  <h2>Hands on</h2>
+  <div class="grid g2">
+    <div class="card"><h3>Pads</h3><p><b>Notes:</b> up to 16 held notes, each with its own envelope, sharing up to 128 grain voices.</p><p><b>Map:</b> hold a pad to jump to a timbre cluster (cluster = note number mod 16). The last pad pressed wins; let go to return.</p><p><b>Pressure</b> goes where the Pressure param says; <b>velocity</b> scales the level.</p></div>
+    <div class="card"><h3>MIDI</h3><p><b>Pitch bend</b> transposes ±2 semitones. <b>MIDI clock</b> drives Follow = Sequence. <b>CC 123</b> releases all notes. Poly aftertouch and channel pressure both work.</p></div>
+  </div>
+</section>
+
+<section id="recipes">
+  <div class="eyebrow">Recipes</div>
+  <h2>Eight starting points</h2>
+  <p class="lede">On the <b>View</b> page, the jog wheel browses them. A recipe sets play and sound parameters and never changes your corpus.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Recipe</th><th>What it sets up</th></tr>
+    <tr><td><b>Init</b></td><td>Defaults.</td></tr>
+    <tr><td><b>Cloud</b></td><td>Map + slow circular LFO, dense 400 ms grains, wide, smooth.</td></tr>
+    <tr><td><b>Stutter</b></td><td>Notes/Zone, 40 ms grains, tight neighbourhood, repeats allowed.</td></tr>
+    <tr><td><b>Drone</b></td><td>Map + very slow LFO, 1.5 s Gauss grains, long attack and release.</td></tr>
+    <tr><td><b>Scatter</b></td><td>Map + S&amp;H LFO, random sizes, detune, reverse, the whole map in play.</td></tr>
+    <tr><td><b>Pitched</b></td><td>Notes/Pitch: the corpus played chromatically.</td></tr>
+    <tr><td><b>Mosaic</b></td><td>Mosaic mode, 80 ms grains, some dry input.</td></tr>
+    <tr><td><b>Sequence</b></td><td>Map + clock-locked LFO, one cycle per bar. Needs the MIDI clock.</td></tr>
+  </table></div>
+</section>
+
+<section id="builder">
+  <div class="eyebrow">Corpus Builder</div>
+  <h2>Build a corpus in the browser, hear it before the Move does</h2>
+  <p class="lede">A web page that runs on your Move. Gather folders and samples, trim them, choose the descriptors, see and play the map, then load it onto Concat's track. It runs Concat's own analysis code (compiled to WebAssembly), so what you see is what the Move will compute: the same slice boundaries, descriptors within 0.06 %.</p>
+
+  <div class="bmock" aria-hidden="true">
+    <div class="bar"><b>Concat Corpus Builder</b><span class="chip">Night Market</span><span class="chip">Open…</span><span class="chip o">Save</span><span class="chip">Load on track 2</span><span style="flex:1"></span><span class="chip b">Track 2 Night Market: ready, 9214 slices</span></div>
+    <div class="col"><h4>Library</h4>
+      <div class="row">UserLibrary / Samples</div><div class="row">▸ Ahuntsic_Ambiances</div><div class="row">▸ MELLOTRON</div><div class="row sel">▸ POSSIBLES</div><div class="row">♪ RC000395.wav</div><div class="row">♪ VISAGE 10 VOIX.wav</div></div>
+    <div class="col"><h4>Corpus sources</h4>
+      <div class="row"><span class="sw" style="background:#e4572e"></span>▾ POSSIBLES · 29 of 30 files</div>
+      <div class="row" style="padding-left:18px">RC000390.wav ▶ ✕</div>
+      <div class="row sel"><span class="sw" style="background:#29a3a3"></span>VISAGE 10 VOIX · 1.54 s to 5.02 s</div>
+      <div class="wave"></div>
+      <div class="row" style="margin-top:6px">Slicing: Onsets · 20 to 2000 ms · gate 0.02</div></div>
+    <div class="col"><h4>Map · Descriptors</h4><canvas id="bmap"></canvas></div>
+  </div>
+
+  <h3 id="b-open">Open it</h3>
+  <p>With the Move on your network (or connected over USB), open this in a desktop browser:</p>
+  <div class="cta" style="margin-top:6px">
+    <a class="btn primary" href="http://move.local:7700/api/remote-ui/module-assets/concat/builder/app.html">Open the Corpus Builder <small>move.local</small></a>
+  </div>
+  <pre><code>http://move.local:7700/api/remote-ui/module-assets/concat/builder/app.html</code></pre>
+  <p>It is also one click away in schwung-manager's <b>Remote UI</b>: Concat's track has an <b>Open the Corpus Builder</b> button. If your Move answers on another name or address, replace <code>move.local</code> with it.</p>
+  <div class="note">The page lives on the Move, served by schwung-manager, so the link above only works when your computer can reach the Move. It needs Concat 0.2.0 installed.</div>
+
+  <h3 id="b-build">Build a corpus</h3>
+  <ol class="steps">
+    <li><b>Gather.</b> Drag folders and samples from the <b>Library</b> onto the corpus column, or use <b>+</b>. <kbd>Ctrl</kbd>+<kbd>A</kbd> selects every sample in a folder; drag them all, or press <b>Add</b>. <kbd>↑</kbd> <kbd>↓</kbd> step through samples and play each one.</li>
+    <li><b>Listen and prune.</b> A folder arrives collapsed: open it (<b>▸</b>) to hear its samples one by one and leave some out (<b>✕</b>, <b>+</b> brings them back). <b>Only / Skip</b> take name patterns like <code>*Kick*</code>.</li>
+    <li><b>Trim.</b> Click a sample: drag on its waveform to keep only that part. Click a slice to hear just that slice. For a sample inside a folder, <b>Trim on its own</b> pulls it out first.</li>
+    <li><b>Slice.</b> Onsets or fixed grains, min and max length, gate: saved into the corpus file.</li>
+    <li><b>Choose descriptors.</b> The <b>Descriptors</b> tab shows each one's range, median and histogram, and how much it shapes the map. Untick what you don't want Concat to listen for.</li>
+  </ol>
+
+  <h3 id="b-map">Hear the map</h3>
+  <div class="grid g2">
+    <div class="card t"><h3>Two views, like Concat</h3><p><b>Learned</b> (3-D; <b>Move view</b> flattens it to the plane Concat uses) or <b>Raw</b> with Concat's X/Y menu. Colour by source, by a descriptor, or by <b>Pad clusters</b>. Click a source and its slices light up; click a dot to hear it.</p></div>
+    <div class="card t"><h3>Play it</h3><p><b>Play the map</b> (or <kbd>P</kbd>, or <kbd>Shift</kbd>+drag): press and move, and grains fire like Concat's Map mode, with Density, Grain and Spread. With Pad clusters, hold a pad in the grid to hear what that pad reaches on the Move.</p></div>
+    <div class="card t"><h3>Record</h3><p><b>● Rec</b> (or <kbd>R</kbd>) records what you play. Download the WAV, or save it to <code>Recordings/Corpus Builder</code> on the Move and add it straight back into the corpus.</p></div>
+    <div class="card t"><h3>Size it</h3><p>The summary shows slices, files and length, and a meter against Concat's Pool Cap: it tells you the Pool Cap to set when the corpus is bigger than 128 MB.</p></div>
+  </div>
+
+  <h3 id="b-save">Save and load</h3>
+  <p><b>Save</b> (<kbd>Ctrl</kbd>+<kbd>S</kbd>) writes <code>UserLibrary/Corpora/&lt;name&gt;.concat</code>. The header shows which track Concat is on and what it plays. <b>Load on track N</b> saves and makes that track play the corpus, with live progress. After that, every save reloads it on the Move while the old version keeps playing. Unsaved work survives a page reload.</p>
+</section>
+
+<section id="files">
+  <div class="eyebrow">Corpus files</div>
+  <h2>The <code>.concat</code> format</h2>
+  <p class="lede">Plain JSON, written by the Builder and readable by hand. Pick one in <b>Source</b> like a sample.</p>
+<pre><code>{
+  "concat": 1,
+  "name": "Night Market",
+  "sources": [
+    { "path": "Samples/Ahuntsic_Ambiances" },
+    { "path": "Samples/MELLOTRON/M300SaxB-20.wav", "start": 0.4, "end": 6.2 },
+    { "path": "Samples/DRUMS", "include": ["*Kick*"], "recurse": false }
+  ],
+  "exclude": ["*click*"],
+  "descriptors": { "use": ["loud", "centroid", "flatness", "pitch", "mfcc1-13"] },
+  "slicing": { "mode": "onset", "min_ms": 40, "max_ms": 600, "gate": 0.02 }
+}</code></pre>
+  <div class="tablewrap"><table>
+    <tr><th>Key</th><th>Meaning</th></tr>
+    <tr><td><code>sources</code></td><td>Folders and samples, relative to <code>/data/UserData/UserLibrary</code>. A missing one is skipped and counted.</td></tr>
+    <tr><td><code>start</code> · <code>end</code></td><td>Seconds: only that part of a sample.</td></tr>
+    <tr><td><code>include</code> · <code>exclude</code></td><td>File-name patterns for a folder (<code>*</code>, <code>?</code>, case ignored). A top-level <code>exclude</code> applies to every folder.</td></tr>
+    <tr><td><code>recurse</code></td><td><code>false</code> keeps a folder to its own files.</td></tr>
+    <tr><td><code>descriptors.use</code></td><td><code>loud</code>, <code>centroid</code>, <code>flatness</code>, <code>zcr</code>, <code>pitch</code>, <code>mfcc</code>, <code>mfccN</code>, <code>mfccA-B</code>. Left-out descriptors leave the search, the clusters and the Learned map.</td></tr>
+    <tr><td><code>slicing</code></td><td><code>mode</code>, <code>min_ms</code>, <code>max_ms</code>, <code>gate</code>: replaces the Corpus page settings.</td></tr>
+  </table></div>
+  <p><b>Live reload:</b> when the loaded file changes, Concat rebuilds it in the background while the old corpus keeps playing, and only new or changed files are analysed again (a 9170-slice corpus went live in 8.6 s instead of 76 s).</p>
+</section>
+
+<section id="remote">
+  <div class="eyebrow">Remote UI</div>
+  <h2>Concat's panel in schwung-manager</h2>
+  <p>In the manager's <b>Remote UI</b> (<code>http://move.local:7700/remote-ui</code>), Concat's track shows a small panel: the corpus playing and its status, a menu of your corpus files to load, and <b>Open the Corpus Builder</b>. Switch <b>Interface</b> to <b>Default</b> at the top of the track for every knob; the manager forgets that choice when the page reloads.</p>
+</section>
+
+<section id="memory">
+  <div class="eyebrow">Memory &amp; caches</div>
+  <h2>What it costs</h2>
+  <div class="grid g3">
+    <div class="card"><h3>RAM</h3><p>Pool Cap (128 MB by default, 512 max), checked against free RAM at every load with 350 MB kept for the Move. Too big a corpus keeps an even subset of slices across all of it.</p></div>
+    <div class="card"><h3>CPU</h3><p>On a 25,000-slice corpus, under 2 ms per audio block at worst (the budget is 2.9 ms). Analysis runs on its own thread on cores 0 to 2.</p></div>
+    <div class="card"><h3>Disk</h3><p>Caches in <code>/data/UserData/schwung/concat-cache</code>: whole corpus (instant reload) and per file (edits). Nothing cleans them yet; delete the folder to reclaim space.</p></div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="eyebrow">Install</div>
+  <h2>Get it on the Move</h2>
+  <ol class="steps">
+    <li>Your Move runs <a href="https://github.com/charlesvestal/schwung">Schwung</a> 1.3.0 or later.</li>
+    <li>Open schwung-manager (<code>http://move.local:7700</code>) and install a custom module from this repo (<code>filliformes/concat-move</code>), or upload <code>concat-module.tar.gz</code> from the <a href="https://github.com/filliformes/concat-move/releases/latest">latest release</a>.</li>
+    <li>Power-cycle the Move (Schwung reads module manifests at startup).</li>
+  </ol>
+</section>
+
+<section id="trouble">
+  <div class="eyebrow">Troubleshooting</div>
+  <h2>When it doesn't</h2>
+  <div class="tablewrap"><table>
+    <tr><th>You see</th><th>Do this</th></tr>
+    <tr><td><code>no audio files</code></td><td>The pick has nothing Concat can read. Pick a sample, not a folder.</td></tr>
+    <tr><td><code>out of memory, kept old</code></td><td>Lower Pool Cap or trim the corpus.</td></tr>
+    <tr><td><code>bad JSON: ...</code></td><td>The corpus file has a mistake; the old corpus keeps playing. Save it again from the Builder.</td></tr>
+    <tr><td>No sound</td><td>Check Play Mode and Volume, that Analyze reached 100 %, and that a pad is held (Notes) or the position sits among the dots (Map).</td></tr>
+    <tr><td>Source shows a number</td><td>The module metadata did not load: power-cycle the Move.</td></tr>
+    <tr><td>Builder: <code>Concat is not on a track</code></td><td>Add Concat to a track; the badge updates by itself.</td></tr>
+  </table></div>
+</section>
+
+<section id="cheat">
+  <div class="eyebrow">Cheat sheet</div>
+  <h2>Corpus Builder keys</h2>
+  <div class="tablewrap"><table class="cheat">
+    <tr><td>Ctrl+A</td><td>Select every sample in the library folder</td></tr>
+    <tr><td>Enter</td><td>Add the selected samples</td></tr>
+    <tr><td>↑ / ↓</td><td>Step through samples and play each one</td></tr>
+    <tr><td>→ / ←</td><td>Open / close a folder source</td></tr>
+    <tr><td>Space</td><td>Play / pause the selected sample</td></tr>
+    <tr><td>Esc</td><td>Stop, clear selections, show the whole map</td></tr>
+    <tr><td>P</td><td>Map: rotate ↔ play</td></tr>
+    <tr><td>Shift + drag</td><td>Map: play while rotating</td></tr>
+    <tr><td>R</td><td>Record what you play</td></tr>
+    <tr><td>Ctrl+S</td><td>Save to the Move</td></tr>
+    <tr><td>?</td><td>Keys and tips</td></tr>
+  </table></div>
+</section>
+
+<section id="credits">
+  <div class="eyebrow">Credits</div>
+  <h2>Made with</h2>
+  <p>Built on <a href="https://github.com/charlesvestal/schwung">Schwung</a> by Charles Vestal and contributors. Decoding with <a href="https://github.com/mackron/dr_libs">dr_libs</a> (public domain). Algorithms studied, not copied, from <a href="https://www.flucoma.org/">FluCoMa</a> (BSD-3) and Diemo Schwarz's CataRT papers on corpus-based concatenative synthesis; the DSP is written from scratch.</p>
+  <p>Instrument, DSP and Builder by <b>Filliformes</b>. MIT license. Not affiliated with or endorsed by Ableton.</p>
+  <footer>Concat v0.2.0 · <a href="https://github.com/filliformes/concat-move">github.com/filliformes/concat-move</a> · <a href="https://github.com/filliformes/concat-move/blob/main/docs/MANUAL.md">Manual (Markdown)</a> · <a href="https://github.com/filliformes/concat-move/blob/main/docs/CHANGELOG.md">Changelog</a></footer>
+</section>
+
+</main>
+</div>
+
+<script>
+/* Drawings: the Move's View page (128x64, 1-bit) and the Builder's map, both from
+ * a small seeded fake corpus so they look the same every load. */
+(function () {
+  let seed = 7;
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+  const gauss = () => { let u = 0; for (let i = 0; i < 6; i++) u += rnd(); return (u - 3) / 3; };
+  const clusters = [[0.3, 0.35, 0.10], [0.62, 0.55, 0.12], [0.45, 0.75, 0.08], [0.8, 0.25, 0.07], [0.2, 0.7, 0.06]];
+  const pts = [];
+  for (let i = 0; i < 360; i++) {
+    const c = clusters[Math.floor(rnd() * clusters.length)];
+    pts.push([Math.min(0.98, Math.max(0.02, c[0] + gauss() * c[2] * 2.6)), Math.min(0.98, Math.max(0.02, c[1] + gauss() * c[2] * 2.6)), clusters.indexOf(c)]);
+  }
+
+  /* View page */
+  const svg = document.getElementById('oled');
+  const px = [];
+  const W = 128, H = 64, top = 9, bot = 55;
+  for (const [x, y] of pts) px.push(`<rect x="${Math.round(2 + x * 123)}" y="${Math.round(top + (1 - y) * (bot - top - 1))}" width="1" height="1" fill="#fff"/>`);
+  const qx = 2 + 0.6 * 123, qy = top + (1 - 0.55) * (bot - top - 1);
+  let s = '';
+  s += '<rect x="0" y="0" width="128" height="8" fill="#000"/>';
+  s += '<text x="2" y="6.5" font-family="monospace" font-size="6.5" fill="#fff">Cloud</text><text x="111" y="6.5" font-family="monospace" font-size="6.5" fill="#fff">2/8</text>';
+  s += '<rect x="0" y="8" width="128" height="1" fill="#fff" opacity=".35"/>';
+  s += px.join('');
+  s += `<circle cx="${qx}" cy="${qy}" r="9" fill="none" stroke="#fff" stroke-width="1"/>`;
+  s += `<rect x="${qx - 2}" y="${qy - 2}" width="5" height="5" fill="#fff"/>`;
+  [[-6, 3], [-10, 6], [-13, 2]].forEach(([dx, dy], k) => { s += `<rect x="${qx + dx}" y="${qy + dy}" width="${k ? 1 : 2}" height="${k ? 1 : 2}" fill="#fff"/>`; });
+  s += '<rect x="0" y="56" width="128" height="8" fill="#000"/>';
+  s += '<text x="2" y="62.5" font-family="monospace" font-size="6.5" fill="#fff">Radius  0.15</text>';
+  svg.innerHTML = s;
+
+  /* Builder map */
+  const cv = document.getElementById('bmap');
+  if (!cv) return;
+  const cols = ['#e4572e', '#29a3a3', '#f2a541', '#6d6ad6', '#76b041'];
+  const draw = () => {
+    const dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+    cv.width = w * dpr; cv.height = h * dpr;
+    const g = cv.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.strokeStyle = '#3a3530'; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(w * 0.08, h * 0.5); g.lineTo(w * 0.92, h * 0.5); g.moveTo(w * 0.5, h * 0.08); g.lineTo(w * 0.5, h * 0.92); g.stroke();
+    for (const [x, y, c] of pts) {
+      g.fillStyle = cols[c]; g.globalAlpha = 0.8;
+      g.beginPath(); g.arc(w * (0.06 + x * 0.88), h * (0.06 + (1 - y) * 0.88), 2, 0, 6.283); g.fill();
+    }
+    g.globalAlpha = 1; g.setLineDash([3, 3]); g.strokeStyle = '#efe9e2';
+    g.beginPath(); g.arc(w * (0.06 + 0.6 * 0.88), h * (0.06 + 0.45 * 0.88), 16, 0, 6.283); g.stroke();
+  };
+  draw();
+  window.addEventListener('resize', draw);
+})();
+</script>
+</body>
+</html>
