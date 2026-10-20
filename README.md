@@ -190,5 +190,3 @@ tests/                   unit tests, session simulator, Builder parity harness
 - Decoding via **[dr_libs](https://github.com/mackron/dr_libs)** (public domain).
 - Algorithms studied (not vendored) from **[FluCoMa](https://www.flucoma.org/)** (BSD-3) and Diemo Schwarz's **CataRT** papers on corpus-based concatenative synthesis.
 - Instrument, DSP and Corpus Builder by **Filliformes**, MIT licensed (see `LICENSE`).
-
-Not affiliated with or endorsed by Ableton.
