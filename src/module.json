@@ -1,7 +1,7 @@
 {
   "id": "concat",
   "name": "Concat",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "api_version": 2,
   "description": "Corpus concatenative synthesis: navigate a timbre map across a whole sample folder, or mosaic live input.",
   "author": "Filliformes",

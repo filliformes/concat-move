@@ -7,7 +7,7 @@ Point Concat at a *folder* of audio. It analyses and slices every file, describe
 I made it to fill an actual gap: the other granular modules in the Move catalog each read one buffer. Concat navigates a descriptor space across a whole sample library instead.
 
 - **Type:** `sound_generator` · **Module ID:** `concat` · **Abbrev:** `CONCAT`
-- **API:** `plugin_api_v2` (`dsp.so`) · **Version:** 0.1.0
+- **API:** `plugin_api_v2` (`dsp.so`) · **Version:** 0.2.0
 - **Author:** Filliformes · **License:** MIT
 
 ---
@@ -44,19 +44,22 @@ Analysis runs on a background thread, playback in the real-time audio callback, 
 
 ## Status
 
-Version 0.1.0. The engine is feature-complete and the code has been through a two-reviewer audit (see the commit history). Some things are still rough and worth knowing:
+Version 0.2.0. New since 0.1.0: corpus files (`.concat`) with live reload and a per-file analysis cache, the Corpus Builder web page, Concat's panel in the manager's Remote UI, and a reliability pass on the engine (switching modules mid-analysis took up to 72 s; it now takes a few ms, and big corpora no longer overload the audio thread). Tested on a Move running Schwung 1.5.0. Some things are still rough and worth knowing:
 
 - The filter and Shape filter-envelope are global, not per-voice.
 - `Follow = Sequence` needs the Move's MIDI clock running to lock tempo.
-- First analysis of a large library can take up to a minute; it is cached afterward.
+- First analysis of a large library can take a minute or more; it is cached afterward, per file.
+- Nothing cleans the analysis caches yet: on the test Move `concat-cache` grew to about 350 MB. Delete `/data/UserData/schwung/concat-cache` to reclaim it (it rebuilds as needed).
+- In the manager's Remote UI, Concat's panel replaces the automatic knob list for its track. **Interface → Default** brings the knobs back for that session.
 - Installing or updating the module needs a device power-cycle (Schwung caches the manifest at startup).
 
 ---
 
 ## Requirements
 
-- **Ableton Move** running the **Schwung** framework (v0.9.x or later). See the [Schwung repo](https://github.com/charlesvestal/schwung) for installation.
-- A folder of audio somewhere under `/data/UserData/UserLibrary/` (Samples, Recordings, Magneto Recs, and so on). WAV, FLAC, and MP3 are supported.
+- **Ableton Move** running the **Schwung** framework, **1.3.0 or later** (tested on 1.5.0). See the [Schwung repo](https://github.com/charlesvestal/schwung) for installation.
+- A folder of audio somewhere under `/data/UserData/UserLibrary/` (Samples, Recordings, Magneto Recs, and so on). WAV, AIFF, FLAC, and MP3 are supported.
+- For the Corpus Builder: a desktop browser on the same network as the Move (or connected over USB).
 
 ---
 

@@ -27,8 +27,8 @@
         "   menu.",
         "2. Select Source",
         "   and pick any",
-        "   .wav/.flac/.mp3",
-        "   under UserLibrary.",
+        "   sample or a",
+        "   .concat corpus.",
         "3. Wait: Analyze",
         "   counts to 100%.",
         "   Slow first time,",
@@ -111,6 +111,28 @@
         " still onset-",
         " sliced into many",
         " pieces."
+      ]
+    },
+    {
+      "title": "Corpus files",
+      "lines": [
+        "A .concat file is a",
+        "corpus built from",
+        "many folders and",
+        "samples, trimmed,",
+        "with chosen",
+        "descriptors.",
+        "",
+        "Make them in the",
+        "Corpus Builder web",
+        "page (Schwung",
+        "manager, Remote UI,",
+        "Concat's track).",
+        "",
+        "Pick one in Source.",
+        "Edits reload while",
+        "the old corpus",
+        "keeps playing."
       ]
     },
     {

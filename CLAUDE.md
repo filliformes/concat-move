@@ -125,7 +125,7 @@ clock reaches `on_midi` as len==1 for `follow=Sequence` / tempo-synced `mosaic_r
 - `create_instance` must do almost nothing (module load blocks SPI ~673 ms) — ARM workers, don't scan/alloc.
 - `get_param` serves a cached snapshot — never rescan folder per repaint.
 - Workers: `SCHED_OTHER` + `taskset` cores 0–2 (core 3 = SPI FIFO 90).
-- **GLIBC ≤ 2.29:** `open("/dev/shm/...")` not `shm_open`; no `-lrt`; no `-Ofast` (libmvec).
+- **GLIBC:** the Move runs a glibc new enough for the 2.33/2.34 symbols the Debian 12 toolchain emits (stat, pthread_*, dlopen); 0.1.0 already needed them. Still: `open("/dev/shm/...")` not `shm_open`; no `-lrt`; no `-Ofast` (libmvec).
 - Files on device owned by `ableton:users`. Never write `/tmp`.
 
 ## API-specific constraints (sound_generator / plugin_api_v2)
@@ -146,11 +146,14 @@ clock reaches `on_midi` as len==1 for `follow=Sequence` / tempo-synced `mosaic_r
 
 ---
 
-## Repo map (scaffolded v0.1.0 — builds clean, GLIBC 2.17, exports move_plugin_init_v2; render_block = SILENCE stub)
-- `src/dsp/concat.c` (+ `analysis.c`, `corpus.c`, `grain.c`, `kissfft.c` as it grows) — all DSP.
-  DONE: table-driven params (4 pages × 8 knobs), page-aware knob overlay, ui_hierarchy, state
-  (de)serialise, MIDI plumbing, 8-field API. TODO: analyst/loader threads, corpus pool + OOM guard,
-  descriptor pipeline (kissfft + dr_libs), kNN query + repeat-avoid, grain engine, mosaic input.
+## Repo map (v0.2.0)
+- `src/dsp/concat.c` — params, analyst thread (cancellable, bounded teardown, status file), MIDI,
+  render, play modes, JSON state. `corpus_engine.c` (build, caches, k-means, PCA), `corpus_file.c`
+  + `json.c` (.concat), `ingest.c` (streamed dr_libs decode, sorted listings), `query.c`, `grain.c`,
+  `analysis.c`, `corpus.c`.
+- `src/builder/` — Corpus Builder web page (served by schwung-manager); `cb.js` = WASM of the
+  analysis code, rebuilt with `scripts/build_wasm.sh`. `src/web_ui.html` — Remote UI panel.
+- `docs/corpus-builder-design.md` — corpus file + builder design and verified manager API facts.
 - `src/module.json` — version must match git tag
 - `scripts/build.sh` — Docker ARM64 cross-compile (always use this; never ad-hoc aarch64)
 - `scripts/install.sh` — `scp -r dist/concat root@move.local:/data/UserData/schwung/modules/sound_generators/` + fix ownership + `chmod +x dsp.so`
