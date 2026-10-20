@@ -116,6 +116,14 @@ http://move.local:7700/api/remote-ui/module-assets/concat/builder/app.html
 
 The page runs Concat's own decoder, slicer and descriptor code, compiled to WebAssembly, in your browser. The Move does no work while you edit. Checked on real samples: same slice boundaries as the Move, descriptors within 0.06% of each descriptor's spread. A saved test corpus of 9214 slices built to exactly 9214 slices on the device. Analysis results are cached in the browser, so reopening a corpus is instant.
 
+### The page and the Move
+
+- The header shows which track Concat is on and what it plays, with live progress while it analyses (`Track 2 Builder Test: analysing 12/40`).
+- **Load on track N** saves the corpus and makes Concat on that track play it: no trip to the Source browser. With Concat on several tracks, pick the track first.
+- In schwung-manager's **Remote UI**, Concat's track shows a small panel: the corpus playing and its status, a menu of your corpus files to load, and a button to open the Corpus Builder. For every knob, switch **Interface** to **Default** at the top of the track.
+
+How: the page uses the manager's Remote UI WebSocket (which module is on each track, and setting Concat's `corpus_file`). Progress comes from small status files Concat's analysis thread writes to `/data/UserData/schwung/concat-cache/status/`. Concat saves its settings as a JSON object, so the manager reads them in one go; sets saved before this still load.
+
 ### On the Move
 
 - If the loaded `.concat` file changes (saved from the page, or edited by hand), Concat rebuilds it in the background while the old corpus keeps playing. Only new or changed files are analysed again: an edit to a 9170-slice corpus went live in 8.6 s instead of 76 s.

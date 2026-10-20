@@ -186,7 +186,7 @@ const meta = new Map();       /* path -> {size, mtime} */
 const results = new Map();    /* analysis key -> {slices, desc, frames?} */
 const peaksMem = new Map();   /* path|size|mtime -> {peaks, frames} */
 
-function markDirty() { S.dirty = true; updateTitle(); saveDraft(); }
+function markDirty() { S.dirty = true; updateTitle(); saveDraft(); if (typeof renderMove === 'function' && $('btnLoad')) renderMove(); }
 /* Unsaved work survives a reload: the draft is the .concat text plus where it came from. */
 const DRAFT_KEY = 'concat-builder-draft';
 function saveDraft() {
@@ -1447,7 +1447,7 @@ function safeName(n) { return n.trim().replace(/[\/\\:*?"<>|]/g, '-').replace(/^
 async function save() {
   const name = safeName($('name').value);
   $('name').value = name; S.name = name;
-  if (!S.sources.length) { setStatus('Add at least one source first', 'bad'); return; }
+  if (!S.sources.length) { setStatus('Add at least one source first', 'bad'); return false; }
   const file = `${name}.concat`;
   try {
     setStatus('Saving…');
@@ -1455,7 +1455,7 @@ async function save() {
     if (!have.some((r) => r.dir && r.name === 'Corpora')) await postForm('/files/mkdir', { path: LIB, name: 'Corpora' });
     if (S.loadedName !== file) {
       const exists = (await listDir(CORPORA).catch(() => [])).some((r) => r.name === file);
-      if (exists && !confirm(`${file} already exists on the Move. Replace it?`)) { setStatus(''); return; }
+      if (exists && !confirm(`${file} already exists on the Move. Replace it?`)) { setStatus(''); return false; }
     }
     const tmp = `${file}.tmp`;
     await postForm('/files/upload', { path: CORPORA }, { blob: new Blob([toJSON()], { type: 'application/json' }), name: tmp });
@@ -1463,8 +1463,10 @@ async function save() {
     const check = await listDir(CORPORA);
     if (!check.some((r) => r.name === file)) throw new Error('the file did not appear on the Move');
     S.loadedName = file; S.dirty = false; clearDraft(); updateTitle();
-    setStatus(`Saved Corpora/${file}. On the Move: Source → Corpora → ${file}`, 'ok');
-  } catch (e) { setStatus(`Save failed: ${e.message || e}`, 'bad'); }
+    setStatus(concatSlots().length ? `Saved Corpora/${file}` : `Saved Corpora/${file}. On the Move: Source → Corpora → ${file}`, 'ok');
+    renderMove();
+    return true;
+  } catch (e) { setStatus(`Save failed: ${e.message || e}`, 'bad'); return false; }
 }
 
 async function openDialog() {
@@ -1554,12 +1556,156 @@ function bindSlicing() {
   for (const id of ['slMode', 'slMin', 'slMax', 'slGate']) $(id).addEventListener('change', apply);
 }
 
+/* ── the Move: where Concat is, what it plays, and loading a corpus ─────────
+ * schwung-manager's Remote UI WebSocket (/ws/remote-ui, same origin) reports which
+ * module sits on each of the 4 tracks (slot_info) and streams parameter values; a
+ * set_param writes one, which is how "Load on track N" sets Concat's corpus_file.
+ * Concat's own progress (it changes on the device, so the manager does not push it)
+ * comes from the status files its analysis thread writes to concat-cache/status/. */
+const STATUS_DIR = '/data/UserData/schwung/concat-cache/status';
+const MV = { ws: null, up: false, retry: 0, slots: [0, 1, 2, 3].map(() => ({ synth: '', corpus: '' })),
+             status: [], pollTimer: 0, watch: null, loadSlot: -1 };
+
+function connectMove() {
+  let ws;
+  try { ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/remote-ui`); } catch (e) { return; }
+  MV.ws = ws;
+  ws.onopen = () => {
+    MV.up = true; MV.retry = 0;
+    for (let s = 0; s < 4; s++) ws.send(JSON.stringify({ type: 'subscribe', slot: s }));
+    renderMove();
+  };
+  ws.onmessage = (e) => {
+    let m; try { m = JSON.parse(e.data); } catch (_) { return; }
+    if (m.type === 'slot_info' && m.slot >= 0 && m.slot < 4) {
+      const was = MV.slots[m.slot].synth;
+      MV.slots[m.slot].synth = m.synth || '';
+      if (was !== MV.slots[m.slot].synth) { if (m.synth !== 'concat') MV.slots[m.slot].corpus = ''; renderMove(); schedulePoll(0); }
+    } else if (m.type === 'param_update' && m.params && m.slot >= 0 && m.slot < 4) {
+      const v = m.params['synth:corpus_file'];
+      if (v !== undefined && MV.slots[m.slot].synth === 'concat' && v !== MV.slots[m.slot].corpus) { MV.slots[m.slot].corpus = v; renderMove(); }
+    }
+  };
+  ws.onclose = () => {
+    MV.up = false; MV.ws = null;
+    renderMove();
+    setTimeout(connectMove, Math.min(30000, 2000 * ++MV.retry));
+  };
+}
+const concatSlots = () => MV.slots.map((s, i) => (s.synth === 'concat' ? i : -1)).filter((i) => i >= 0);
+
+/* The status file for what a track plays: Concat analyses the file itself for a
+ * .concat, or its folder for a sample picked with Scope = Folder. */
+function statusFor(slot) {
+  const c = MV.slots[slot].corpus;
+  if (!c) return null;
+  const hits = MV.status.filter((st) => st.path === c || st.path === dirName(c));
+  return hits.sort((a, b) => b.t - a.t)[0] || null;
+}
+async function pollStatus() {
+  if (!concatSlots().length && !MV.watch) return;
+  let rows = [];
+  try { rows = (await listDir(STATUS_DIR)).filter((r) => !r.dir && r.name.endsWith('.json')); } catch (e) { rows = []; }
+  const out = [];
+  for (const r of rows) {
+    try {
+      const res = await fetch(dlUrl(r.path), { cache: 'no-store' });
+      if (res.ok) out.push(JSON.parse(await res.text()));
+    } catch (e) { /* half-written or gone: next poll */ }
+  }
+  MV.status = out;
+  renderMove();
+  checkWatch();
+}
+function schedulePoll(ms) {
+  clearTimeout(MV.pollTimer);
+  MV.pollTimer = setTimeout(async () => {
+    await pollStatus();
+    const busy = MV.watch || MV.status.some((s) => s.state === 'building');
+    if (concatSlots().length || MV.watch) schedulePoll(busy ? 1000 : 5000);
+  }, ms);
+}
+
+function stateText(st) {
+  if (!st) return '';
+  if (st.state === 'building') return st.status || `${st.phase}${st.total ? ` ${st.done}/${st.total}` : ''}`;
+  if (st.state === 'error') return st.status || 'error';
+  if (st.state === 'ready') return `ready, ${st.slices.toLocaleString()} slices${st.status ? ` · ${st.status}` : ''}`;
+  return st.status || '';
+}
+const corpusLabel = (p) => (p ? baseName(p).replace(/\.concat$/i, '') : 'no corpus');
+
+function renderMove() {
+  const badge = $('moveBadge'), btn = $('btnLoad'), sel = $('loadSlot');
+  const slots = concatSlots();
+  badge.className = 'move-badge';
+  if (!MV.up) { badge.textContent = 'Move: connecting…'; badge.title = 'Talking to schwung-manager on the Move'; badge.classList.add('off'); }
+  else if (!slots.length) { badge.textContent = 'Concat is not on a track'; badge.title = 'Add Concat to a track (Schwung) to load corpora from here'; badge.classList.add('off'); }
+  else {
+    badge.textContent = '';
+    slots.forEach((i, k) => {
+      const st = statusFor(i), busy = st && st.state === 'building';
+      if (k) badge.append(el('span', { class: 'sep' }, ' · '));
+      badge.append(el('span', { class: 'trk' + (busy ? ' busy' : st && st.state === 'error' ? ' err' : '') },
+        el('b', {}, `Track ${i + 1}`), ` ${corpusLabel(MV.slots[i].corpus)}`, st ? `: ${stateText(st)}` : ''));
+    });
+    badge.title = slots.map((i) => `Track ${i + 1}: ${MV.slots[i].corpus || 'no corpus'}`).join('\n');
+  }
+  /* Load button: one Concat → "Load on track N"; several → a track menu */
+  btn.hidden = !slots.length; sel.hidden = slots.length < 2;
+  if (slots.length) {
+    if (!slots.includes(MV.loadSlot)) MV.loadSlot = slots[0];
+    if (slots.length > 1) {
+      const cur = sel.value;
+      sel.textContent = '';
+      slots.forEach((i) => sel.append(el('option', { value: i }, `Track ${i + 1}`)));
+      sel.value = slots.includes(+cur) ? cur : String(MV.loadSlot);
+      MV.loadSlot = +sel.value;
+      btn.textContent = 'Load on';
+    } else btn.textContent = `Load on track ${MV.loadSlot + 1}`;
+    btn.disabled = !S.sources.length || !!MV.watch;
+    btn.title = 'Save this corpus and make Concat on that track play it';
+  }
+}
+
+async function loadOnMove() {
+  const slot = MV.loadSlot;
+  if (slot < 0 || !MV.ws || !MV.up) return;
+  if (S.dirty || !S.loadedName) { if (!(await save())) return; }
+  const path = `${CORPORA}/${S.loadedName}`;
+  const before = MV.status.find((s) => s.path === path);
+  MV.ws.send(JSON.stringify({ type: 'set_param', slot, key: 'synth:corpus_file', value: path }));
+  MV.slots[slot].corpus = path;
+  MV.watch = { slot, path, since: before ? before.t : -1, t0: performance.now() };
+  setStatus(`Loading ${S.loadedName} on track ${slot + 1}…`);
+  renderMove();
+  schedulePoll(400);
+}
+function checkWatch() {
+  const w = MV.watch;
+  if (!w) return;
+  const st = MV.status.find((s) => s.path === w.path && s.t !== w.since);
+  if (st && st.state === 'building') setStatus(`Track ${w.slot + 1}: ${stateText(st)}`);
+  else if (st && (st.state === 'ready' || st.state === 'error')) {
+    MV.watch = null;
+    setStatus(`Track ${w.slot + 1}: ${stateText(st)}`, st.state === 'ready' ? 'ok' : 'bad');
+  } else if (performance.now() - w.t0 > 180000) {
+    MV.watch = null;
+    setStatus(`Track ${w.slot + 1}: no word from Concat yet. Is it the Concat version with corpus files?`, 'bad');
+  }
+  renderMove();
+}
+
 /* ── init ─────────────────────────────────────────────────────────────────── */
 function init() {
   loadPrefs();
   map = new Map3D($('map'), { onPick: onMapPick, onHover: onMapHover, onPlay: onMapPlay, radiusPx: () => G.spreadPx });
   bindMapBar();
   bindTake();
+  $('btnLoad').addEventListener('click', () => loadOnMove());
+  $('loadSlot').addEventListener('change', () => { MV.loadSlot = +$('loadSlot').value; });
+  connectMove();
+  renderMove();
   $('btnHelp').addEventListener('click', () => $('dlgHelp').showModal());
   $('helpClose').addEventListener('click', () => $('dlgHelp').close());
   $('btnUp').addEventListener('click', () => showLib(dirName(libPath).length < LIB.length ? LIB : dirName(libPath)));

@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Concat</title>
+<style>
+:root {
+  --bg: #ffffff; --panel: #f6f5f1; --line: #dedbd2; --ink: #1d1c1a; --ink2: #6b675e;
+  --accent: #c2410c; --accent-ink: #fff; --ok: #15803d; --bad: #b91c1c;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #1d1d1b; --panel: #232321; --line: #34332f; --ink: #ecebe6; --ink2: #9c988d;
+          --accent: #f97316; --accent-ink: #1a1a18; --ok: #4ade80; --bad: #f87171; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 12px; }
+h1 { font-size: 14px; margin: 0 0 8px; display: flex; align-items: baseline; gap: 8px; }
+h1 small { font-weight: 400; color: var(--ink2); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.label { color: var(--ink2); font-size: 12px; }
+.corpus { font-weight: 600; font-size: 14px; overflow-wrap: anywhere; }
+.state { margin-top: 2px; }
+.state.err { color: var(--bad); } .state.ok { color: var(--ok); }
+.bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+.bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+select, button { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; }
+select { min-width: 0; flex: 1; }
+button { cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+button:disabled { opacity: .45; cursor: default; }
+.hint { color: var(--ink2); font-size: 12px; margin: 6px 0 0; }
+.link { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; color: var(--ink2); overflow-wrap: anywhere; user-select: all; }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<h1>Concat <small>corpus synthesis</small></h1>
+
+<div class="card">
+  <div class="label">Playing</div>
+  <div class="corpus" id="corpus">…</div>
+  <div class="state" id="state"></div>
+  <div class="bar" id="bar" hidden><i></i></div>
+</div>
+
+<div class="card">
+  <div class="label">Load a corpus file</div>
+  <div class="row" style="margin-top:6px">
+    <select id="pick"><option value="">Loading…</option></select>
+    <button id="load" class="primary" disabled>Load</button>
+  </div>
+  <p class="hint">Corpus files live in UserLibrary/Corpora. Build them with the Corpus Builder.</p>
+</div>
+
+<div class="card">
+  <div class="row">
+    <button id="builder" class="primary">Open the Corpus Builder ↗</button>
+  </div>
+  <p class="hint" id="builderHint" hidden>Your browser kept this panel from opening a tab. Open this address instead:</p>
+  <div class="row"><div class="link" id="builderLink" hidden></div><button id="copyLink" hidden>Copy</button></div>
+  <p class="hint">Every knob: switch <b>Interface</b> to <b>Default</b> at the top of this track.</p>
+</div>
+
+<script src="/static/schwung-remote-api.js"></script>
+<script>
+'use strict';
+/* Concat's panel in schwung-manager's Remote UI. Parameters go through the manager's
+ * bridge (schwung-remote-api.js); progress comes from the status files Concat's
+ * analysis thread writes (concat-cache/status/*.json), read through /files. */
+const LIB = '/data/UserData/UserLibrary', CORPORA = LIB + '/Corpora';
+const STATUS_DIR = '/data/UserData/schwung/concat-cache/status';
+const BUILDER = '/api/remote-ui/module-assets/concat/builder/app.html';
+const $ = (id) => document.getElementById(id);
+const base = (p) => p.slice(p.lastIndexOf('/') + 1);
+const dir = (p) => p.slice(0, p.lastIndexOf('/'));
+let corpus = '', statusTimer = 0, busy = false;
+
+async function listDir(path) {
+  const r = await fetch('/files?path=' + encodeURIComponent(path), { credentials: 'same-origin' });
+  if (!r.ok) throw new Error(r.status);
+  const doc = new DOMParser().parseFromString(await r.text(), 'text/html');
+  return [...doc.querySelectorAll('tr.file-row[data-path]')]
+    .map((tr) => ({ path: tr.getAttribute('data-path'), name: tr.getAttribute('data-name') || '', dir: tr.getAttribute('data-isdir') === 'true' }))
+    .filter((r) => dir(r.path) === path);                 /* a missing folder lists the root */
+}
+
+function showCorpus() {
+  $('corpus').textContent = corpus ? base(corpus).replace(/\.concat$/i, '') : 'No corpus yet';
+  $('corpus').title = corpus;
+  for (const o of $('pick').options) if (o.value === corpus) $('pick').value = corpus;
+}
+
+async function poll() {
+  clearTimeout(statusTimer);
+  let st = null;
+  try {
+    const rows = (await listDir(STATUS_DIR)).filter((r) => r.name.endsWith('.json'));
+    for (const r of rows) {
+      try {
+        const j = JSON.parse(await (await fetch('/files/download?path=' + encodeURIComponent(r.path), { cache: 'no-store' })).text());
+        if (corpus && (j.path === corpus || j.path === dir(corpus)) && (!st || j.t > st.t)) st = j;
+      } catch (e) { /* half-written: next time */ }
+    }
+  } catch (e) { /* no status yet */ }
+  const el = $('state'), bar = $('bar');
+  el.className = 'state';
+  busy = !!st && st.state === 'building';
+  if (!st) el.textContent = corpus ? '' : 'Pick a corpus below, or a sample in Source on the Move.';
+  else if (busy) { el.textContent = st.status || st.phase; bar.hidden = false; bar.firstElementChild.style.width = `${st.progress || 0}%`; }
+  else if (st.state === 'ready') { el.textContent = `Ready: ${st.slices.toLocaleString()} slices${st.status ? ` · ${st.status}` : ''}`; el.classList.add('ok'); }
+  else if (st.state === 'error') { el.textContent = st.status || 'Could not load'; el.classList.add('err'); }
+  if (!busy) bar.hidden = true;
+  statusTimer = setTimeout(poll, busy ? 1000 : 4000);
+}
+
+async function listCorpora() {
+  const pick = $('pick');
+  let rows = [];
+  try { rows = (await listDir(CORPORA)).filter((r) => !r.dir && /\.concat$/i.test(r.name)); } catch (e) { /* none yet */ }
+  pick.textContent = '';
+  if (!rows.length) { pick.append(new Option('No corpus files yet', '')); $('load').disabled = true; return; }
+  pick.append(new Option('Choose a corpus…', ''));
+  rows.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+      .forEach((r) => pick.append(new Option(r.name.replace(/\.concat$/i, ''), r.path)));
+  showCorpus();
+  $('load').disabled = !pick.value;
+}
+
+/* The panel sits in a sandboxed frame without allow-popups. The click also
+ * activates the (same-origin) manager page, so the tab is opened from THAT page's
+ * own context. If the browser still refuses (window.open gives nothing back), show
+ * the address with a Copy button; the manager's "Pop out" opens this panel as a
+ * normal page, where the button always works. */
+function openBuilder() {
+  const url = location.origin + BUILDER;
+  let opened = false;
+  try {
+    if (window.top === window.self) opened = !!window.open(url, '_blank');
+    else opened = !!window.parent.Function('u', 'return window.open(u, "_blank")')(url);
+  } catch (e) { opened = false; }
+  if (opened) return;
+  $('builderHint').hidden = false;
+  $('builderLink').hidden = false;
+  $('builderLink').textContent = url;
+  $('copyLink').hidden = false;
+}
+
+$('pick').addEventListener('change', () => { $('load').disabled = !$('pick').value || $('pick').value === corpus; });
+$('load').addEventListener('click', () => {
+  const p = $('pick').value;
+  if (!p) return;
+  schwungRemote.setParam('synth:corpus_file', p);
+  corpus = p; showCorpus();
+  $('load').disabled = true;
+  $('state').className = 'state'; $('state').textContent = 'Loading…';
+  setTimeout(poll, 400);
+});
+$('builder').addEventListener('click', openBuilder);
+$('copyLink').addEventListener('click', () => {
+  const t = $('builderLink').textContent;
+  const done = () => { $('copyLink').textContent = 'Copied'; setTimeout(() => { $('copyLink').textContent = 'Copy'; }, 1500); };
+  if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(t).then(done, () => {});
+  else {                                               /* plain http: no Clipboard API */
+    const r = document.createRange(); r.selectNodeContents($('builderLink'));
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+    try { document.execCommand('copy'); done(); } catch (e) { /* the text stays selected */ }
+  }
+});
+
+schwungRemote.onParamChange((params) => {
+  if (params && params['synth:corpus_file'] !== undefined && params['synth:corpus_file'] !== corpus) {
+    corpus = params['synth:corpus_file']; showCorpus(); poll();
+  }
+});
+schwungRemote.getParam('synth:corpus_file').then((v) => { if (v !== undefined && v !== null && v !== corpus) { corpus = v; showCorpus(); poll(); } });
+listCorpora();
+poll();
+</script>
+</body>
+</html>

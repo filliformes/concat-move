@@ -65,6 +65,9 @@ typedef struct {
     int files_cached;            /* files whose slices/descriptors came from the per-file cache */
     unsigned long long watch_stamp;   /* corpus_watch_stamp() taken right after the sources
                                        * were read: a later edit always differs from it */
+    void (*tick)(void *ctx);     /* optional: called on the build thread as progress moves
+                                  * (phase changes, each file). Kept across the reset. */
+    void *tick_ctx;
     corpus_spec_t *spec;         /* optional, caller-owned: receives the resolved spec (name,
                                   * slicing/mask overrides, watch list, parse error). Kept
                                   * across the reset at the start of a build. */

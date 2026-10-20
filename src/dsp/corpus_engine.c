@@ -502,10 +502,14 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
                                    corpus_build_info_t *info) {
     corpus_build_info_t local;
     corpus_spec_t *spec_out = info ? info->spec : NULL;
+    void (*tick)(void *) = info ? info->tick : NULL;
+    void *tick_ctx = info ? info->tick_ctx : NULL;
     if (!info) info = &local;
     memset((void *)info, 0, sizeof(*info));
-    info->spec = spec_out;
+    info->spec = spec_out; info->tick = tick; info->tick_ctx = tick_ctx;
+#define TICK() do { if (info->tick) info->tick(info->tick_ctx); } while (0)
     info->phase = CB_SCAN;
+    TICK();
 
     int cap = pool_cap_samples;
     if (mem_cap_samples > 0 && mem_cap_samples < cap) { cap = mem_cap_samples; info->mem_limited = 1; }
@@ -533,6 +537,7 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
     uint64_t sig = cache_dir ? corpus_signature(items, nfiles, &spec, slice_mode, min_len, max_len, sil_gate, sr) : 0;
     if (cache_dir && sig && !force_rescan) {
         info->phase = CB_LOAD;
+        TICK();
         corpus_index_t *hit = cache_load(cache_dir, folder, sig, pool_cap_samples, mem_cap_samples);
         if (hit) {
             corpus_write_scatter_bmp(hit, cache_dir, folder);   /* regenerate scatter image (cheap) */
@@ -545,6 +550,7 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
     }
 
     info->phase = CB_ANALYSE;
+    TICK();
     analysis_t *a = analysis_create(sr, 1024, 40, 13);
     corpus_index_t *ix = (corpus_index_t *)calloc(1, sizeof(corpus_index_t));
     slice_range_t *ranges = (slice_range_t *)malloc(sizeof(slice_range_t) * MAX_SLICES_FILE);
@@ -700,6 +706,7 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
         pfc_free(&pfc);
         info->files_done = f + 1;
         info->progress = (int)((long)(f + 1) * 90 / nfiles);
+        TICK();
     }
 
     free(items); free(ranges); free(win); analysis_destroy(a);
@@ -712,6 +719,7 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
     }
 
     info->phase = CB_FINAL;
+    TICK();
     concat_robust_fit(raw, ix->nslices, ix->median, ix->iqr);
     ix->qn = (float *)malloc(sizeof(float) * NDESC * (size_t)ix->nslices);
     if (!ix->qn) { free(raw); corpus_index_free(ix); info->err = CB_ERR_MEM; return NULL; }
@@ -732,10 +740,12 @@ corpus_index_t *corpus_index_build(const char *folder, int sr,
     info->progress = 95;
     if (cache_dir && sig && !info->mem_limited) {                   /* never overwrite the full cache */
         info->phase = CB_SAVE;                                      /* with a memory-decimated subset */
+        TICK();
         cache_store(cache_dir, folder, sig, ix);                    /* best-effort; aborts on cancel */
     }
     index_stamp(ix);
     info->nslices = ix->nslices;
     info->phase = CB_DONE;
     return ix;
+#undef TICK
 }

@@ -46,6 +46,11 @@ header .name { width: 220px; font-weight: 600; }
 header .spacer { flex: 1; }
 #status { color: var(--ink2); flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #status.bad { color: var(--bad); } #status.ok { color: var(--ok); }
+.move-badge { flex: none; max-width: 42%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px;
+  padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel2); }
+.move-badge.off { color: var(--ink2); }
+.move-badge .trk.busy b { color: var(--accent); } .move-badge .trk.err b { color: var(--bad); }
+.move-badge .sep { color: var(--ink2); }
 
 main { display: grid; grid-template-columns: minmax(220px, 280px) minmax(320px, 1fr) minmax(360px, 1.15fr); flex: 1; min-height: 0; }
 section { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
@@ -168,7 +173,10 @@ dialog .foot { padding: 10px; display: flex; gap: 8px; justify-content: flex-end
   <button id="btnNew">New</button>
   <button id="btnOpen">Open…</button>
   <button id="btnSave" class="primary">Save</button>
+  <select id="loadSlot" hidden title="Which track's Concat"></select>
+  <button id="btnLoad" hidden>Load on track</button>
   <span id="status"></span>
+  <span id="moveBadge" class="move-badge off">Move: connecting…</span>
   <button id="btnTheme" class="icon" title="Light / dark">◐</button>
 </header>
 <main>

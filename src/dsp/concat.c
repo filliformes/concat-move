@@ -255,6 +255,10 @@ typedef struct {
     corpus_spec_t   *spec;               /* analyst-owned: last resolved sources (hot-reload watch list) */
     unsigned long long watch_stamp, watch_pending;   /* analyst-only: change detection + debounce */
     char             spec_err[96];       /* copy of spec->err for the status line */
+    uint32_t         sid;                /* instance id: names this instance's status file */
+    char             status_path[512];   /* corpus being built / loaded (analyst-only) */
+    long long        status_ms;          /* last status write (analyst-only, rate limit) */
+    int              status_phase;
 
     /* Mosaic mode: live-input descriptor extraction (render thread) */
     const concat_host_t *host;
@@ -463,6 +467,61 @@ static void drop_ref(concat_t *inst) {
     if (__atomic_sub_fetch(&inst->refs, 1, __ATOMIC_ACQ_REL) == 0) free_instance(inst);
 }
 
+/* ── Status file ──────────────────────────────────────────────────────────────
+ * <cache>/status/<sid>.json says what this instance is doing, for the Corpus
+ * Builder page and Concat's Remote UI panel (served by schwung-manager's /files).
+ * Written by the analyst only (never the SPI thread): at most every 500 ms while
+ * building, and once when a build ends. Removed when the instance goes away. */
+#define CONCAT_STATUS_DIR CONCAT_CACHE_DIR "/status"
+static int corpus_status(concat_t *inst, char *buf, int buf_len);   /* fwd */
+static long long mono_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (long long)t.tv_sec * 1000 + t.tv_nsec / 1000000; }
+static int json_esc(char *out, int cap, const char *s) {
+    int n = 0;
+    for (; s && *s && n < cap - 7; s++) {
+        unsigned char c = (unsigned char)*s;
+        if (c == '"' || c == '\\') { out[n++] = '\\'; out[n++] = (char)c; }
+        else if (c < 0x20) n += snprintf(out + n, (size_t)(cap - n), "\\u%04x", c);
+        else out[n++] = (char)c;
+    }
+    out[n] = 0;
+    return n;
+}
+static void status_file(const concat_t *inst, char *out, int cap) { snprintf(out, (size_t)cap, CONCAT_STATUS_DIR "/%08x.json", inst->sid); }
+static void status_write(concat_t *inst, int force) {
+    long long now = mono_ms();
+    const corpus_build_info_t *b = &inst->binfo;
+    if (!force && b->phase == inst->status_phase && now - inst->status_ms < 500) return;
+    inst->status_ms = now; inst->status_phase = b->phase;
+    static const char *PH[] = { "idle", "scanning", "loading cache", "analysing", "mapping", "saving cache", "done" };
+    corpus_index_t *ix = __atomic_load_n(&inst->index, __ATOMIC_ACQUIRE);
+    const char *state = inst->building ? "building" : b->err ? "error" : ix ? "ready" : "idle";
+    char path[1100], name[200], st[160], ste[340];
+    json_esc(path, sizeof path, inst->status_path);
+    json_esc(name, sizeof name, inst->spec && inst->spec->name[0] ? inst->spec->name : "");
+    corpus_status(inst, st, sizeof st);
+    json_esc(ste, sizeof ste, st);
+    char js[2400];
+    int n = snprintf(js, sizeof js,
+        "{\"v\":1,\"id\":\"%08x\",\"path\":\"%s\",\"name\":\"%s\",\"state\":\"%s\",\"phase\":\"%s\","
+        "\"done\":%d,\"total\":%d,\"progress\":%d,\"slices\":%d,\"from_cache\":%d,\"mem_limited\":%d,"
+        "\"files_cached\":%d,\"missing\":%d,\"failed\":%d,\"status\":\"%s\",\"t\":%lld}\n",
+        inst->sid, path, name, state, PH[b->phase >= 0 && b->phase <= CB_DONE ? b->phase : 0],
+        b->files_done, b->files_total, inst->building ? b->progress : (ix ? 100 : 0),
+        ix ? ix->nslices : 0, b->from_cache, b->mem_limited, b->files_cached, b->sources_missing, b->files_failed,
+        ste, now);
+    if (n <= 0 || n >= (int)sizeof js) return;
+    mkdir(CONCAT_CACHE_DIR, 0755); mkdir(CONCAT_STATUS_DIR, 0755);
+    char fn[160], tmp[170];
+    status_file(inst, fn, sizeof fn);
+    snprintf(tmp, sizeof tmp, "%s.tmp", fn);
+    FILE *fp = fopen(tmp, "w");
+    if (!fp) return;
+    int ok = fwrite(js, 1, (size_t)n, fp) == (size_t)n;
+    if (fclose(fp) != 0) ok = 0;
+    if (ok) rename(tmp, fn); else remove(tmp);
+}
+static void build_tick(void *p) { status_write((concat_t *)p, 0); }
+
 static void *analyst_thread(void *arg) {
     concat_t *inst = (concat_t *)arg;
     struct sched_param sp; sp.sched_priority = 0;
@@ -541,6 +600,8 @@ static void *analyst_thread(void *arg) {
 
         inst->building = 1;
         inst->binfo.spec = inst->spec;          /* receives the resolved sources */
+        inst->binfo.tick = build_tick; inst->binfo.tick_ctx = inst;
+        snprintf(inst->status_path, sizeof inst->status_path, "%s", path);
         corpus_index_t *ni = corpus_index_build(path, 44100, sm, mn, mx, sg, pool_samples, mem_samples,
                                                 CONCAT_CACHE_DIR, force, &inst->binfo);
         if (ni && (inst->cancel || inst->shutdown)) { corpus_index_free(ni); ni = NULL; }
@@ -558,7 +619,9 @@ static void *analyst_thread(void *arg) {
             snprintf(inst->spec_err, sizeof(inst->spec_err), "%s", inst->spec->err);
         }
         inst->building = 0;
+        status_write(inst, 1);
     }
+    { char fn[160]; status_file(inst, fn, sizeof fn); unlink(fn); }   /* instance gone */
     free(inst->spec);
     drop_ref(inst);
     return NULL;
@@ -572,6 +635,11 @@ static void *create_instance(const char *module_dir, const char *json_defaults) 
     if (!inst) return NULL;
     for (int i = 0; i < NPARAMS; i++) inst->pv[i] = PARAMS[i].def;
     inst->lfo_rng = 0x1234567u;
+    {   /* status-file id: unique enough per process + instance + time */
+        struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
+        inst->sid = (uint32_t)((uintptr_t)inst ^ ((uint32_t)t.tv_nsec * 2654435761u) ^ ((uint32_t)getpid() << 16));
+        inst->status_phase = -1;
+    }
     inst->lfo_shx = inst->pv[P_X_POS]; inst->lfo_shy = inst->pv[P_Y_POS];
     inst->samples_per_beat = 22050.0f;   /* 120 BPM fallback until MIDI clock arrives */
     grain_engine_init(&inst->ge);
@@ -697,6 +765,79 @@ static void on_midi(void *instance, const uint8_t *msg, int len, int source) {
     }
 }
 
+/* Restore from a flat JSON object without allocating (set_param runs on the SPI
+ * thread): each "key": value member goes through set_param like a key=value line.
+ * Strings may carry JSON escapes; numbers and booleans pass as text. */
+static void state_from_json(concat_t *inst, const char *p) {
+    if (*p != '{') return;
+    p++;
+    for (;;) {
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') p++;
+        if (*p != '"') return;                              /* '}' or garbage: done */
+        char k[64], v[600];
+        int kl = 0, vl = 0;
+        for (p++; *p && *p != '"'; p++) {
+            if (*p == '\\' && p[1]) p++;
+            if (kl < (int)sizeof(k) - 1) k[kl++] = *p;
+        }
+        if (*p != '"') return;
+        k[kl] = 0; p++;
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        if (*p != ':') return;
+        p++;
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        if (*p == '"') {                                    /* string, with escapes */
+            for (p++; *p && *p != '"'; p++) {
+                char c = *p;
+                if (c == '\\' && p[1]) {
+                    p++;
+                    switch (*p) {
+                        case 'n': c = '\n'; break;
+                        case 't': c = '\t'; break;
+                        case 'r': c = '\r'; break;
+                        case 'b': c = '\b'; break;
+                        case 'f': c = '\f'; break;
+                        case 'u': {
+                            unsigned cp = 0;
+                            for (int h = 1; h <= 4; h++) {
+                                char d = p[h];
+                                cp <<= 4;
+                                if (d >= '0' && d <= '9') cp |= (unsigned)(d - '0');
+                                else if (d >= 'a' && d <= 'f') cp |= (unsigned)(d - 'a' + 10);
+                                else if (d >= 'A' && d <= 'F') cp |= (unsigned)(d - 'A' + 10);
+                                else return;                /* malformed: stop */
+                            }
+                            p += 4;
+                            if (cp < 0x80) c = (char)cp;
+                            else {                          /* UTF-8 (BMP) */
+                                char u[3]; int un;
+                                if (cp < 0x800) { u[0] = (char)(0xC0 | (cp >> 6)); u[1] = (char)(0x80 | (cp & 0x3F)); un = 2; }
+                                else { u[0] = (char)(0xE0 | (cp >> 12)); u[1] = (char)(0x80 | ((cp >> 6) & 0x3F)); u[2] = (char)(0x80 | (cp & 0x3F)); un = 3; }
+                                for (int q = 0; q < un - 1; q++) if (vl < (int)sizeof(v) - 1) v[vl++] = u[q];
+                                c = u[un - 1];
+                            }
+                            break;
+                        }
+                        default: c = *p; break;             /* \" \\ \/ */
+                    }
+                }
+                if (vl < (int)sizeof(v) - 1) v[vl++] = c;
+            }
+            if (*p != '"') return;
+            p++;
+        } else {                                            /* number / true / false / null */
+            while (*p && *p != ',' && *p != '}' && *p != ' ' && *p != '\n' && *p != '\r' && *p != '\t') {
+                if (vl < (int)sizeof(v) - 1) v[vl++] = *p;
+                p++;
+            }
+        }
+        v[vl] = 0;
+        if (!strcmp(v, "true")) strcpy(v, "1");
+        else if (!strcmp(v, "false")) strcpy(v, "0");
+        if (strcmp(k, "state") != 0 && strcmp(v, "null") != 0) set_param(inst, k, v);
+    }
+}
+
 /* ── set_param ──────────────────────────────────────────────────────────────── */
 
 static void set_param(void *instance, const char *key, const char *val) {
@@ -736,9 +877,12 @@ static void set_param(void *instance, const char *key, const char *val) {
         return;
     }
 
-    /* State deserialize: newline-separated key=value (schema-robust). */
+    /* State deserialize. Current saves are a flat JSON object (what schwung-manager's
+     * Remote UI reads in one go); older sets hold newline-separated key=value. */
     if (strcmp(key, "state") == 0) {
         const char *p = val;
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        if (*p == '{') { state_from_json(inst, p); return; }
         while (*p) {
             const char *eol = strchr(p, '\n'); if (!eol) eol = p + strlen(p);
             const char *eq  = (const char *)memchr(p, '=', eol - p);
@@ -954,21 +1098,36 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
                         ix ? ix->kclusters : -1, ix ? ix->pca_ok : -1, (int)inst->samples_per_beat, inst->corpus_path);
     }
 
-    /* State serialize: one key=value line per persistent param. */
+    /* State serialize: a flat JSON object, one member per persistent param, enums by
+     * name (as get_param serves them). The host stores it as an object in the set and
+     * hands it back compact; schwung-manager's Remote UI reads it in one round trip
+     * (with key=value it fell back to one read per param and showed nothing). */
     if (strcmp(key, "state") == 0) {
-        int n = 0;
+        int n = 0, first = 1;
+#define ST_EMIT(...) do { if (n < buf_len) n += snprintf(buf + n, (size_t)(buf_len - n), __VA_ARGS__); } while (0)
+        ST_EMIT("{");
         for (int i = 0; i < NPARAMS; i++) {
             if (i == P_RESCAN || i == P_ANALYZE) continue;  /* transient/read-only */
-            if (n >= buf_len) return buf_len - 1;           /* guard: buf full, avoid size_t underflow */
             const pdef_t *p = &PARAMS[i];
-            if (p->type == T_FLOAT) n += snprintf(buf + n, buf_len - n, "%s=%.6f\n", p->key, (double)inst->pv[i]);
-            else                    n += snprintf(buf + n, buf_len - n, "%s=%d\n",   p->key, (int)lrintf(inst->pv[i]));
+            ST_EMIT("%s\"%s\":", first ? "" : ",", p->key);
+            first = 0;
+            if (p->type == T_ENUM) {
+                int idx = (int)lrintf(inst->pv[i]);
+                if (idx < 0) idx = 0;
+                if (idx >= p->nopts) idx = p->nopts - 1;
+                ST_EMIT("\"%s\"", p->opts[idx]);
+            }
+            else if (p->type == T_FLOAT) ST_EMIT("%.6g", (double)inst->pv[i]);
+            else                         ST_EMIT("%d", (int)lrintf(inst->pv[i]));
         }
-        if (inst->corpus_file[0] && n < buf_len)
-            n += snprintf(buf + n, buf_len - n, "corpus_file=%s\n", inst->corpus_file);
-        if (n < buf_len)   /* label only: restored via preset_idx, which does not re-apply */
-            n += snprintf(buf + n, buf_len - n, "preset_idx=%d\n", inst->preset_idx);
-        return n;
+        if (inst->corpus_file[0]) {
+            char esc[1100];
+            json_esc(esc, sizeof esc, inst->corpus_file);
+            ST_EMIT(",\"corpus_file\":\"%s\"", esc);
+        }
+        ST_EMIT(",\"preset_idx\":%d}", inst->preset_idx);   /* label only: does not re-apply */
+#undef ST_EMIT
+        return (n >= buf_len) ? -1 : n;                     /* never hand out a truncated object */
     }
 
     /* Named param value. Enums return string names (required for menu editing). */
