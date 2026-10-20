@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write   # create the release and push release.json
+
 jobs:
   build:
     runs-on: ubuntu-latest
