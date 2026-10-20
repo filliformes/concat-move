@@ -189,4 +189,5 @@ tests/                   unit tests, session simulator, Builder parity harness
 - Built on **[Schwung](https://github.com/charlesvestal/schwung)** by Charles Vestal and contributors.
 - Decoding via **[dr_libs](https://github.com/mackron/dr_libs)** (public domain).
 - Algorithms studied (not vendored) from **[FluCoMa](https://www.flucoma.org/)** (BSD-3) and Diemo Schwarz's **CataRT** papers on corpus-based concatenative synthesis.
+- Inspired by **[Mosaïque](https://github.com/LFO-lab/Mosaique)** ([site](https://mosaique.cargo.site/)), a corpus-based concatenative synthesizer for Max for Live that lays a corpus out in a 3-D timbral space. It was made by a team at LFO-lab; I am part of the lab, not of that team.
 - Instrument, DSP and Corpus Builder by **Filliformes**, MIT licensed (see `LICENSE`).
