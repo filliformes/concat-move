@@ -124,6 +124,13 @@ section:last-child { border-right: 0; }
 .pool .meter i { display: block; height: 100%; background: var(--ok); }
 .pool.warn .meter i { background: var(--accent); } .pool.over .meter i { background: var(--bad); }
 .pool.warn b, .pool.over b { color: var(--accent); }
+#btnRec.rec { background: var(--bad); border-color: var(--bad); color: #fff; animation: recblink 1s steps(2) infinite; }
+@keyframes recblink { 50% { opacity: .65; } }
+.pads { text-align: left; }
+.pads .grid { display: grid; grid-template-columns: repeat(8, 18px); gap: 3px; margin-top: 4px; }
+.pads .pad { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 3px; color: #fff; font-size: 9px; font-weight: 700; line-height: 18px;
+  text-shadow: 0 0 2px rgba(0,0,0,.6); cursor: pointer; touch-action: none; }
+.pads .pad:active { outline: 2px solid var(--ink); }
 table.keys td { padding: 3px 10px 3px 0; vertical-align: top; }
 table.keys td:first-child { font-family: var(--mono); white-space: nowrap; color: var(--accent); }
 #mapTip { position: absolute; left: 10px; bottom: 10px; right: 10px; color: var(--ink2); font-size: 12px; pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -211,6 +218,7 @@ dialog .foot { padding: 10px; display: flex; gap: 8px; justify-content: flex-end
       <div id="legend"></div>
       <div id="playBar">
         <button id="btnPlay" title="Press and drag on the map to play it like Concat (or hold Shift in rotate mode). P toggles.">▶︎ Play the map</button>
+        <button id="btnRec" title="Record what you play on the map, then save it as a WAV (R)">● Rec</button>
         <label title="Grains per second (Concat: Density)">Density <input id="pDensity" type="range" min="1" max="60" step="1"><span id="pDensityV"></span></label>
         <label title="Grain length (Concat: Grain Size)">Grain <input id="pGrain" type="range" min="20" max="1000" step="10"><span id="pGrainV"></span></label>
         <label title="How many nearest slices a grain picks from (Concat: K Nearest)">Spread <input id="pSpread" type="range" min="1" max="16" step="1"><span id="pSpreadV"></span></label>
@@ -220,6 +228,19 @@ dialog .foot { padding: 10px; display: flex; gap: 8px; justify-content: flex-end
     <div class="scroll" id="desc" hidden></div>
   </section>
 </main>
+
+<dialog id="dlgTake">
+  <div class="head"><span class="grow">Your take</span></div>
+  <div class="body">
+    <div id="takeInfo" class="muted"></div>
+    <div style="display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap">
+      <button id="takePlay">▶︎ Listen</button>
+      <label class="muted">Name <input id="takeName" type="text" size="34" spellcheck="false"></label>
+    </div>
+    <p class="muted">Saved takes go to UserLibrary/Recordings/Corpus Builder on the Move, ready to use as samples, or in this corpus.</p>
+  </div>
+  <div class="foot"><button id="takeDiscard">Discard</button><button id="takeDownload">Download WAV</button><button id="takeSave" class="primary">Save to the Move</button></div>
+</dialog>
 
 <dialog id="dlgHelp">
   <div class="head"><span class="grow">Keys and tips</span></div>
@@ -234,6 +255,9 @@ dialog .foot { padding: 10px; display: flex; gap: 8px; justify-content: flex-end
       <tr><td>Click a source</td><td>its slices light up on the map</td></tr>
       <tr><td>P</td><td>map: switch between rotate and play</td></tr>
       <tr><td>Shift + drag</td><td>map: play while in rotate mode</td></tr>
+      <tr><td>R</td><td>record what you play on the map (again to stop)</td></tr>
+      <tr><td>Click a slice</td><td>in a waveform: hear just that slice</td></tr>
+      <tr><td>Hold a pad</td><td>Colour → Pad clusters: hear the cluster that Move pad jumps to in Map mode</td></tr>
       <tr><td>Ctrl+S</td><td>save the corpus to the Move</td></tr>
     </table>
     <p class="muted">The map shows what Concat navigates. <b>Raw</b> is Concat's default Map Mode (X = Bright, Y = Pitch); <b>Learned</b> spreads the corpus by PCA of the descriptors you keep. Playing the map uses Concat's pick rule: a random slice among the nearest few.</p>

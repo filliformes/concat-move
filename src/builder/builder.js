@@ -221,6 +221,9 @@ async function expandFolder(path, recurse, depth = 0, out = []) {
   if (depth > 8 || out.length > 4000) return out;
   let rows;
   try { rows = await listDir(path); } catch (e) { return out; }
+  /* Same order as the Move (ingest.c sorts entries by name, byte order, subfolders in
+   * place): corpus order decides k-means seeds, so pad clusters match the device. */
+  rows = rows.slice().sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   for (const r of rows) {
     if (r.dir) { if (recurse) await expandFolder(r.path, true, depth + 1, out); }
     else if (AUDIO_RE.test(r.name)) out.push(r.path);
@@ -500,7 +503,7 @@ function renderFileEditor(ed, s) {
     el('label', { class: 'muted' }, 'Start ', startIn, ' s'),
     el('label', { class: 'muted' }, 'End ', endIn, ' s'),
     el('button', { onclick: () => { s.start = 0; s.end = 0; startIn.value = '0.00'; endIn.value = ''; markDirty(); drawWave(); renderSources(); scheduleAnalysis(); } }, 'Whole file'),
-    el('span', { class: 'muted' }, 'Drag on the waveform to choose the part that enters the corpus.')));
+    el('span', { class: 'muted' }, 'Drag on the waveform to choose the part that enters the corpus. Click a slice to hear it.')));
 }
 
 /* A file inside a folder source: hear it, skip it, or pull it out to trim it. */
@@ -515,7 +518,7 @@ function renderMemberEditor(ed, s, f) {
        : el('button', { onclick: () => unskipFile(s, f) }, '+ Put back'),
     el('button', { title: 'Adds this sample as its own source (so you can trim it) and leaves it out of the folder',
                    onclick: () => trimOnItsOwn(s, f) }, 'Trim on its own'),
-    el('span', { class: 'muted' }, `In ${baseName(s.path)}. Click the waveform to play from there; ↑/↓ steps through the files.`)));
+    el('span', { class: 'muted' }, `In ${baseName(s.path)}. Click a slice to hear it; ↑/↓ steps through the files.`)));
 }
 function trimOnItsOwn(s, f) {
   if (usedIn(s).has(f)) s.exclude = [...(s.exclude || []), globEscape(baseName(f))];
@@ -528,38 +531,71 @@ function trimOnItsOwn(s, f) {
   markDirty(); renderSources(); renderEditor(); scheduleAnalysis();
 }
 
+/* The slice of `s`'s analysed range under time t (s), as absolute frames. */
+function sliceAt(s, t) {
+  const r = results.get(keyOf({ path: s.path, start: s.start || 0, end: s.end || 0 }));
+  if (!r) return null;
+  const a = s.start || 0, rel = Math.round((t - a) * SR);
+  for (let i = 0; i < r.slices.length; i += 2)
+    if (rel >= r.slices[i] && rel < r.slices[i] + r.slices[i + 1]) return { from: Math.round(a * SR) + r.slices[i], len: r.slices[i + 1] };
+  return null;
+}
+function playSliceAt(s, t) {
+  const h = sliceAt(s, t);
+  if (h) playFrames(s.path, h.from, h.from + h.len).catch(playErr);
+  return !!h;
+}
+
 function bindWave(cv, s) {
   const toSec = (e) => {
     const r = cv.getBoundingClientRect();
     return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * (wave.frames / SR);
   };
-  if (s.preview) {                                     /* folder member: click plays from there */
-    cv.addEventListener('pointerdown', (e) => { if (wave && wave.frames) playFile(s.path, toSec(e), 0); });
+  let drag = null;
+  /* hover shades the slice under the pointer */
+  cv.addEventListener('pointermove', (e) => {
+    if (drag || !wave || !wave.frames) return;
+    const h = sliceAt(s, toSec(e)), k = h ? h.from : -1;
+    if (k !== wave.hoverKey) { wave.hoverKey = k; wave.hover = h; drawWave(); }
+  });
+  cv.addEventListener('pointerleave', () => { if (wave && wave.hover) { wave.hover = null; wave.hoverKey = -1; drawWave(); } });
+  if (s.preview) {                                     /* folder member: click plays the slice (or from there) */
+    cv.addEventListener('pointerdown', (e) => {
+      if (!wave || !wave.frames) return;
+      const t = toSec(e);
+      if (!playSliceAt(s, t)) playFile(s.path, t, 0);
+    });
     return;
   }
-  let drag = null;
   cv.addEventListener('pointerdown', (e) => {
     if (!wave || !wave.frames) return;
     const t = toSec(e), dur = wave.frames / SR;
     const a = s.start || 0, b = s.end > s.start ? s.end : dur;
     const px = 6 * dur / cv.getBoundingClientRect().width;      /* grab handles within 6 px */
-    drag = Math.abs(t - a) < px ? 'a' : Math.abs(t - b) < px ? 'b' : 'new';
-    if (drag === 'new') { drag = { anchor: t }; s.start = t; s.end = t; }
+    const prev = { start: s.start, end: s.end };
+    drag = Math.abs(t - a) < px ? { kind: 'a', prev } : Math.abs(t - b) < px ? { kind: 'b', prev } : { kind: 'new', anchor: t, prev };
+    if (drag.kind === 'new') { s.start = t; s.end = t; }
+    wave.hover = null;
     cv.setPointerCapture(e.pointerId);
   });
   cv.addEventListener('pointermove', (e) => {
     if (!drag || !wave) return;
     const t = toSec(e), dur = wave.frames / SR;
-    if (drag === 'a') s.start = Math.min(t, (s.end > s.start ? s.end : dur) - 0.01);
-    else if (drag === 'b') s.end = Math.max(t, (s.start || 0) + 0.01);
+    if (drag.kind === 'a') s.start = Math.min(t, (s.end > s.start ? s.end : dur) - 0.01);
+    else if (drag.kind === 'b') s.end = Math.max(t, (s.start || 0) + 0.01);
     else { s.start = Math.min(drag.anchor, t); s.end = Math.max(drag.anchor, t); }
     drawWave(); syncInputs();
   });
-  cv.addEventListener('pointerup', () => {
+  cv.addEventListener('pointerup', (e) => {
     if (!drag || !wave) return;
-    drag = null;
+    const d = drag; drag = null;
     const dur = wave.frames / SR;
-    if (s.end - s.start < 0.02) { s.start = 0; s.end = 0; }          /* a click clears the range */
+    if (d.kind === 'new' && s.end - s.start < 0.02) {           /* a click: keep the range, hear the slice */
+      s.start = d.prev.start; s.end = d.prev.end;
+      syncInputs(); drawWave();
+      playSliceAt(s, toSec(e));
+      return;
+    }
     if (s.end >= dur - 0.005) s.end = 0;                             /* to the end */
     if (s.start < 0.005) s.start = 0;
     syncInputs(); markDirty(); drawWave(); renderSources(); scheduleAnalysis();
@@ -593,6 +629,10 @@ function drawWave() {
     for (let i = i0; i < i1 && i < n; i++) { lo = Math.min(lo, wave.peaks[2 * i]); hi = Math.max(hi, wave.peaks[2 * i + 1]); }
     g.fillStyle = !wave.preview && x >= xa && x <= xb ? cSel : cWave;
     g.fillRect(x, mid - hi * mid * 0.95, 1, Math.max(1, (hi - lo) * mid * 0.95));
+  }
+  if (wave.hover) {                                     /* the slice under the pointer */
+    const x0 = (wave.hover.from / SR / dur) * W, x1 = ((wave.hover.from + wave.hover.len) / SR / dur) * W;
+    g.fillStyle = cInk; g.globalAlpha = 0.18; g.fillRect(x0, 0, Math.max(1, x1 - x0), H); g.globalAlpha = 1;
   }
   /* slice boundaries from the analysis of this range */
   const r = results.get(keyOf({ path: s.path, start: s.start || 0, end: s.end || 0 }));
@@ -881,7 +921,8 @@ function recompute() {
     eig.contrib = new Float64Array(NDESC);
     for (let c = 0; c < 3; c++) for (let d = 0; d < NDESC; d++) eig.contrib[d] += eig.share[c] * eig.axes[c][d] ** 2;
   }
-  corpus = { n, raw, qn, item, slice, its, proj, stats, eig, used };
+  const clusters = kmeans(qn, n);
+  corpus = { n, raw, qn, item, slice, its, proj, stats, eig, used, clusters };
   updateMap();
   updateFocus();
   $('mapEmpty').style.display = n ? 'none' : '';
@@ -992,7 +1033,56 @@ function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(P));
 
 /* Concat's X/Y Descriptor menu and the dims it maps to (desc_index in concat.c). */
 const RAW_AXES = [['Bright', 13], ['Pitch', 34], ['Loud', 32], ['Noisy', 14], ['Rolloff', 15], ['MFCC1', 1], ['MFCC2', 2], ['MFCC3', 3]];
-const COLOR_BY = [['source', 'Source'], ['32', 'Loudness'], ['13', 'Brightness'], ['14', 'Noisiness'], ['34', 'Pitch'], ['15', 'Zero crossings']];
+const COLOR_BY = [['source', 'Source'], ['cluster', 'Pad clusters'], ['32', 'Loudness'], ['13', 'Brightness'], ['14', 'Noisiness'], ['34', 'Pitch'], ['15', 'Zero crossings']];
+const CLUSTER_COLS = ['#e6194b', '#3cb44b', '#d4a106', '#4363d8', '#f58231', '#911eb4', '#2bb3b3', '#d633c8',
+                      '#86b300', '#e08a8a', '#008080', '#9b7fd4', '#9a6324', '#7a7a00', '#800000', '#3a9e7a'];
+
+/* Concat's pad clusters (corpus_kmeans in corpus_engine.c): K = 16, 16 iterations,
+ * seeds = evenly spaced slices in corpus order, empty clusters reseeded the same way,
+ * float32 sums. Holding a pad in Map mode jumps to cluster (note % K). */
+function kmeans(qn, n) {
+  const K = Math.min(16, n), N = NDESC;
+  if (!K) return null;
+  const cen = new Float32Array(K * N), asg = new Int32Array(n), cnt = new Int32Array(K);
+  for (let k = 0; k < K; k++) { const r = Math.floor((k * n) / K); cen.set(qn.subarray(r * N, (r + 1) * N), k * N); }
+  const dist = (i, k) => { let d = 0; for (let j = 0; j < N; j++) { const e = qn[i * N + j] - cen[k * N + j]; d = Math.fround(d + Math.fround(e * e)); } return d; };
+  const assign = () => {
+    for (let i = 0; i < n; i++) {
+      let best = 0, bd = Infinity;
+      for (let k = 0; k < K; k++) { const d = dist(i, k); if (d < bd) { bd = d; best = k; } }
+      asg[i] = best;
+    }
+  };
+  for (let it = 0; it < 16; it++) {
+    assign();
+    cen.fill(0); cnt.fill(0);
+    for (let i = 0; i < n; i++) { const k = asg[i]; cnt[k]++; for (let j = 0; j < N; j++) cen[k * N + j] += qn[i * N + j]; }
+    for (let k = 0; k < K; k++) {
+      if (cnt[k] > 0) { const inv = Math.fround(1 / cnt[k]); for (let j = 0; j < N; j++) cen[k * N + j] *= inv; }
+      else { const r = ((Math.imul(it, 2654435761 | 0) + Math.imul(k, 40503)) >>> 0) % n; cen.set(qn.subarray(r * N, (r + 1) * N), k * N); }
+    }
+  }
+  assign();                                                  /* members, for colours */
+  const size = new Int32Array(K);
+  for (let i = 0; i < n; i++) size[asg[i]]++;
+  /* what a held pad plays: the slices nearest the centroid (full descriptor space) */
+  const near = [];
+  for (let k = 0; k < K; k++) {
+    const bd = [], bi = [];
+    for (let i = 0; i < n; i++) {
+      const d = dist(i, k);
+      if (bd.length < 16 || d < bd[bd.length - 1]) {
+        let q = bd.length < 16 ? bd.length : 15;
+        while (q > 0 && bd[q - 1] > d) { bd[q] = bd[q - 1]; bi[q] = bi[q - 1]; q--; }
+        bd[q] = d; bi[q] = i;
+      }
+    }
+    near.push(bi);
+  }
+  return { K, asg, size, near };
+}
+/* Move pads: notes 68..99, bottom row 68..75 up to the top row 92..99. */
+const padCluster = (note, K) => ((note % K) + K) % K;
 const RAMP = [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]];   /* viridis-like, readable both themes */
 function rampColour(t) {
   const x = Math.max(0, Math.min(1, t)) * (RAMP.length - 1), i = Math.min(RAMP.length - 2, Math.floor(x)), f = x - i;
@@ -1003,6 +1093,7 @@ function rampColour(t) {
 function mapColours() {
   const n = corpus.n, out = new Array(n);
   if (P.colorBy === 'source') { for (let i = 0; i < n; i++) out[i] = colourOf(corpus.its[corpus.item[i]].src); return out; }
+  if (P.colorBy === 'cluster') { const a = corpus.clusters ? corpus.clusters.asg : null; for (let i = 0; i < n; i++) out[i] = a ? CLUSTER_COLS[a[i] % 16] : '#888'; return out; }
   const d = +P.colorBy, idx = new Uint32Array(n);
   for (let i = 0; i < n; i++) idx[i] = i;
   idx.sort((a, b) => corpus.raw[a * NDESC + d] - corpus.raw[b * NDESC + d]);
@@ -1017,7 +1108,8 @@ function renderLegend() {
   if (P.view === 'raw') {
     for (const k of [P.rawX, P.rawY]) if (!corpus.used[RAW_AXES[k][1]]) notes.push(`${RAW_AXES[k][0]} is not used by this corpus: flat on the Move too`);
   }
-  if (P.colorBy !== 'source') {
+  if (P.colorBy === 'cluster' && corpus.clusters) lg.append(padGrid());
+  else if (P.colorBy !== 'source') {
     const d = +P.colorBy, st = corpus.stats[d], name = COLOR_BY.find((c) => c[0] === P.colorBy)[1];
     const bar = el('div', { class: 'bar' });
     bar.style.background = `linear-gradient(90deg, ${RAMP.map((c, i) => `rgb(${c}) ${(i / (RAMP.length - 1)) * 100}%`).join(', ')})`;
@@ -1051,7 +1143,7 @@ function bindMapBar() {
   on('mapAxes', (v) => { P.view = v; });
   on('rawX', (v) => { P.rawX = +v; });
   on('rawY', (v) => { P.rawY = +v; });
-  on('colorBy', (v) => { P.colorBy = v; });
+  on('colorBy', (v) => { P.colorBy = v; if (v === 'cluster' && corpus && corpus.clusters) preload(clusterPaths([...Array(corpus.clusters.K).keys()]), true); });
   const slider = (id, key, fmt) => {
     const inp = $(id), out = $(id + 'V');
     inp.value = P[key]; out.textContent = fmt(P[key]);
@@ -1068,23 +1160,49 @@ function bindMapBar() {
  * fire at Density per second; each picks a random slice among the Spread (K) nearest
  * dots to the pointer, avoiding the last 4 played (Concat's Repeat Avoid default), with
  * a Hann window and Concat's default pan spread. Audio is decoded on demand. */
-const G = { pos: null, timer: 0, next: 0, recent: [], spreadPx: 24, out: null, loading: new Set(), lastTip: -1 };
+const G = { pos: null, cluster: null, timer: 0, next: 0, recent: [], spreadPx: 24, out: null, tap: null, loading: new Set(), lastTip: -1 };
 let hann = null;
 const bufOf = new WeakMap();   /* decoded Float32Array -> AudioBuffer */
 function grainOut() {
   if (!G.out) {
-    const c = ctx(), comp = c.createDynamicsCompressor(), g = c.createGain();
+    const c = ctx(), comp = c.createDynamicsCompressor(), g = c.createGain(), tap = c.createGain();
     comp.threshold.value = -14; comp.ratio.value = 4; g.gain.value = 0.7;
-    g.connect(comp); comp.connect(c.destination);
-    G.out = g;
+    g.connect(comp); comp.connect(tap); tap.connect(c.destination);
+    G.out = g; G.tap = tap;                                    /* the recorder listens to tap */
   }
   return G.out;
 }
-function wantAudio(path) {
-  if (audioMem.has(path) || G.loading.has(path)) return;
-  G.loading.add(path);
-  $('mapTip').textContent = `Loading audio: ${baseName(path)}…`;
-  decodedAudio(path, true).catch(() => {}).finally(() => G.loading.delete(path));
+/* One background queue decodes corpus audio for playing: requests from the pointer or
+ * a pad go first, the rest of the corpus fills in behind until the memory cap. */
+const preQ = [];
+let preRunning = false;
+function preload(paths, front) {
+  const fresh = paths.filter((p) => !audioMem.has(p) && !G.loading.has(p));
+  for (const p of fresh) { const at = preQ.indexOf(p); if (at >= 0) preQ.splice(at, 1); }
+  if (front) preQ.unshift(...fresh); else preQ.push(...fresh);
+  runPreload();
+}
+async function runPreload() {
+  if (preRunning) return;
+  preRunning = true;
+  while (preQ.length) {
+    let total = 0;
+    for (const a of audioMem.values()) total += a.length;
+    if (total > AUDIO_MEM_CAP * 0.9 && !G.timer) break;          /* full: only on-demand loads from here */
+    const p = preQ.shift();
+    if (audioMem.has(p) || G.loading.has(p)) continue;
+    G.loading.add(p);
+    if (G.timer) $('mapTip').textContent = `Loading audio: ${baseName(p)}…`;
+    try { await decodedAudio(p, true); } catch (e) { /* skip unreadable */ }
+    G.loading.delete(p);
+  }
+  preRunning = false;
+}
+function wantAudio(path) { if (!audioMem.has(path) && !G.loading.has(path)) preload([path], true); }
+function clusterPaths(clusters) {
+  const seen = new Set();
+  for (const c of clusters) for (const i of corpus.clusters.near[c]) seen.add(sliceInfo(i).it.path);
+  return [...seen];
 }
 function playGrain(i, when) {
   const s = sliceInfo(i), arr = audioMem.get(s.it.path);
@@ -1106,11 +1224,12 @@ function playGrain(i, when) {
   return true;
 }
 function grainTick() {
-  if (!G.pos || !corpus || !corpus.n) return;
+  if ((!G.pos && G.cluster === null) || !corpus || !corpus.n) return;
   const c = ctx(), now = c.currentTime;
   if (G.next < now) G.next = now + 0.005;
-  const near = map.nearestK(G.pos.x, G.pos.y, P.spread);
-  G.spreadPx = Math.max(6, near.r);
+  let near;
+  if (G.cluster !== null && corpus.clusters) near = { idx: corpus.clusters.near[G.cluster].slice(0, P.spread) };   /* held pad */
+  else { near = map.nearestK(G.pos.x, G.pos.y, P.spread); G.spreadPx = Math.max(6, near.r); }
   if (!near.idx.length) return;
   let guard = 0;
   while (G.next < now + 0.08 && guard++ < 16) {                /* schedule 80 ms ahead on the audio clock */
@@ -1124,34 +1243,162 @@ function grainTick() {
     G.next += 1 / P.density;
   }
 }
-function onMapPlay(pos) {
-  G.pos = pos;
-  if (pos && !G.timer) {
+function grainsRun() {
+  const want = !!G.pos || G.cluster !== null;
+  if (want && !G.timer) {
     ctx();
     G.next = 0; G.recent = [];
     G.timer = setInterval(grainTick, 15);
     grainTick();
-  } else if (!pos && G.timer) {
+  } else if (!want && G.timer) {
     clearInterval(G.timer); G.timer = 0;
     onMapHover(-1);
   }
 }
-/* Decode the corpus files in the background so the first grains are not silent. */
-let preloading = false;
-async function preloadCorpusAudio() {
-  if (preloading || !corpus) return;
-  preloading = true;
+function onMapPlay(pos) { G.pos = pos; grainsRun(); }
+/* Hold a pad in the grid: Concat's Map-mode cluster jump. */
+function padPress(c) {
+  G.cluster = c;
+  const set = new Set();
+  corpus.clusters.asg.forEach((k, i) => { if (k === c) set.add(i); });
+  map.setFocus(set);
+  wantClusterAudio(c);
+  grainsRun();
+}
+function padRelease() { if (G.cluster === null) return; G.cluster = null; updateFocus(); grainsRun(); }
+function wantClusterAudio(c) { preload(clusterPaths([c]), true); }
+function padGrid() {
+  const K = corpus.clusters.K, box = el('div', { class: 'pads', title: 'Concat\'s pads in Map mode: hold one to jump to its cluster. Hold here to hear it.' });
+  box.append(el('div', {}, 'Pad clusters (Map mode)'));
+  const grid = el('div', { class: 'grid' });
+  for (let row = 3; row >= 0; row--) for (let col = 0; col < 8; col++) {
+    const note = 68 + row * 8 + col, c = padCluster(note, K);
+    const cell = el('button', { class: 'pad', style: `background:${CLUSTER_COLS[c % 16]}`,
+      title: `Pad ${note}: cluster ${c + 1}, ${corpus.clusters.size[c]} slices. Hold to hear it.` }, String(c + 1));
+    cell.addEventListener('pointerdown', (e) => { e.preventDefault(); cell.setPointerCapture(e.pointerId); padPress(c); });
+    cell.addEventListener('pointerup', padRelease);
+    cell.addEventListener('pointercancel', padRelease);
+    grid.append(cell);
+  }
+  box.append(grid);
+  return box;
+}
+/* Recording: everything played on the map (drag, Shift+drag, pads), tapped after the
+ * compressor and kept as float stereo at the audio context's rate, then a 16-bit WAV
+ * to download or save to the Move (UserLibrary/Recordings/Corpus Builder).
+ * ScriptProcessor rather than AudioWorklet: the Move serves this page over plain http,
+ * where browsers do not offer AudioWorklet. */
+const REC = { node: null, on: false, chunks: [], frames: 0, timer: 0, blob: null, secs: 0, savedPath: null };
+const REC_MAX_S = 300;
+function recNode() {
+  if (REC.node) return REC.node;
+  const c = ctx();
+  grainOut();
+  const sp = c.createScriptProcessor(4096, 2, 2);
+  sp.onaudioprocess = (e) => {
+    for (let ch = 0; ch < e.outputBuffer.numberOfChannels; ch++) e.outputBuffer.getChannelData(ch).fill(0);
+    if (!REC.on) return;
+    const ib = e.inputBuffer, L = ib.getChannelData(0).slice(), R = (ib.numberOfChannels > 1 ? ib.getChannelData(1) : ib.getChannelData(0)).slice();
+    REC.chunks.push([L, R]); REC.frames += L.length;               /* silence too: timing is kept */
+  };
+  const mute = c.createGain(); mute.gain.value = 0;
+  G.tap.connect(sp); sp.connect(mute); mute.connect(c.destination);   /* keeps it running */
+  REC.node = sp;
+  return sp;
+}
+function startRec() {
+  try { recNode(); } catch (e) { setStatus('Recording is not supported in this browser', 'bad'); return; }
+  REC.chunks = []; REC.frames = 0; REC.on = true;
+  const b = $('btnRec'), t0 = performance.now();
+  b.classList.add('rec');
+  REC.timer = setInterval(() => {
+    const sec = (performance.now() - t0) / 1000;
+    b.textContent = `■ ${fmtClock(sec)}`;
+    if (sec >= REC_MAX_S) stopRec();
+  }, 200);
+  if (map.mode !== 'play') setPlayMode(true);
+  setStatus(`Recording: play the map (up to ${REC_MAX_S / 60} min). R or ■ stops.`);
+}
+function stopRec() {
+  if (!REC.on) return;
+  clearInterval(REC.timer);
+  const b = $('btnRec'); b.classList.remove('rec'); b.textContent = '● Rec';
+  setTimeout(() => { REC.on = false; finishTake(); }, 150);   /* let the last grain tail in */
+}
+const fmtClock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+function finishTake() {
+  if (!REC.frames) { setStatus('Nothing was recorded'); return; }
+  const sr = ctx().sampleRate;
+  /* trim silence at both ends (the take starts at Rec, not at the first grain) */
+  let first = -1, last = -1, pos = 0;
+  for (const [L, R] of REC.chunks) {
+    for (let k = 0; k < L.length; k++, pos++) if (Math.abs(L[k]) > 1e-4 || Math.abs(R[k]) > 1e-4) { if (first < 0) first = pos; last = pos; }
+  }
+  if (first < 0) { setStatus('The take was silent: play the map while recording'); return; }
+  first = Math.max(0, first - Math.round(sr * 0.01)); last = Math.min(pos - 1, last + Math.round(sr * 0.25));
+  const n = last - first + 1, data = new DataView(new ArrayBuffer(44 + n * 4));
+  const str = (o, t) => { for (let k = 0; k < t.length; k++) data.setUint8(o + k, t.charCodeAt(k)); };
+  str(0, 'RIFF'); data.setUint32(4, 36 + n * 4, true); str(8, 'WAVEfmt '); data.setUint32(16, 16, true);
+  data.setUint16(20, 1, true); data.setUint16(22, 2, true); data.setUint32(24, sr, true); data.setUint32(28, sr * 4, true);
+  data.setUint16(32, 4, true); data.setUint16(34, 16, true); str(36, 'data'); data.setUint32(40, n * 4, true);
+  let o = 44; pos = 0;
+  const q = (v) => Math.max(-32768, Math.min(32767, Math.round(v * 32767)));
+  for (const [L, R] of REC.chunks) for (let k = 0; k < L.length; k++, pos++) {
+    if (pos < first || pos > last) continue;
+    data.setInt16(o, q(L[k]), true); data.setInt16(o + 2, q(R[k]), true); o += 4;
+  }
+  REC.chunks = [];
+  REC.blob = new Blob([data.buffer], { type: 'audio/wav' });
+  REC.secs = n / sr; REC.savedPath = null;
+  const d = new Date(), pad2 = (x) => String(x).padStart(2, '0');
+  $('takeName').value = `${S.name} take ${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}${pad2(d.getMinutes())}`;
+  $('takeInfo').textContent = `${fmtTime(REC.secs)} · stereo · ${sr} Hz · ${(REC.blob.size / 1048576).toFixed(1)} MB`;
+  $('takeSave').textContent = 'Save to the Move';
+  $('dlgTake').showModal();
+  setStatus('');
+}
+let takeNode = null;
+async function playTake() {
+  if (takeNode) { try { takeNode.stop(); } catch (e) { /* ignore */ } takeNode = null; $('takePlay').textContent = '▶︎ Listen'; return; }
+  const c = ctx(), buf = await c.decodeAudioData(await REC.blob.arrayBuffer());
+  takeNode = c.createBufferSource(); takeNode.buffer = buf; takeNode.connect(c.destination); takeNode.start();
+  $('takePlay').textContent = '■ Stop';
+  takeNode.onended = () => { takeNode = null; $('takePlay').textContent = '▶︎ Listen'; };
+}
+function downloadTake() {
+  const a = el('a', { href: URL.createObjectURL(REC.blob), download: `${safeName($('takeName').value)}.wav` });
+  document.body.append(a); a.click(); a.remove();
+}
+async function saveTake() {
+  if (REC.savedPath) { addSource(REC.savedPath, false); $('dlgTake').close(); return; }   /* second press: add it */
+  const name = `${safeName($('takeName').value)}.wav`, dir = `${LIB}/Recordings/Corpus Builder`;
+  try {
+    setStatus('Saving the take…');
+    if (!(await listDir(LIB).catch(() => [])).some((r) => r.dir && r.name === 'Recordings')) await postForm('/files/mkdir', { path: LIB, name: 'Recordings' });
+    if (!(await listDir(`${LIB}/Recordings`).catch(() => [])).some((r) => r.dir && r.name === 'Corpus Builder')) await postForm('/files/mkdir', { path: `${LIB}/Recordings`, name: 'Corpus Builder' });
+    await postForm('/files/upload', { path: dir }, { blob: REC.blob, name: `${name}.tmp` });
+    await postForm('/files/rename', { path: `${dir}/${name}.tmp`, name });
+    REC.savedPath = `${dir}/${name}`;
+    $('takeSave').textContent = 'Add it to the corpus';
+    setStatus(`Saved Recordings/Corpus Builder/${name}`, 'ok');
+  } catch (e) { setStatus(`Save failed: ${e.message || e}`, 'bad'); }
+}
+function bindTake() {
+  $('btnRec').addEventListener('click', () => (REC.on ? stopRec() : startRec()));
+  $('takePlay').addEventListener('click', () => playTake().catch(playErr));
+  $('takeDownload').addEventListener('click', downloadTake);
+  $('takeSave').addEventListener('click', saveTake);
+  $('takeDiscard').addEventListener('click', () => { if (takeNode) playTake(); REC.blob = null; $('dlgTake').close(); });
+  $('dlgTake').addEventListener('close', () => { if (takeNode) playTake(); });
+}
+
+/* Decode the corpus files in the background so the first grains are not silent:
+ * the files with the most slices first. */
+function preloadCorpusAudio() {
+  if (!corpus) return;
   const counts = new Map();
   for (let i = 0; i < corpus.n; i++) { const p = corpus.its[corpus.item[i]].path; counts.set(p, (counts.get(p) || 0) + 1); }
-  const paths = [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a));
-  for (const p of paths) {
-    if (map.mode !== 'play') break;
-    let total = 0;
-    for (const a of audioMem.values()) total += a.length;
-    if (total > AUDIO_MEM_CAP * 0.9) break;
-    if (!audioMem.has(p)) { try { await decodedAudio(p, true); } catch (e) { /* skip */ } }
-  }
-  preloading = false;
+  preload([...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a)), false);
 }
 function setPlayMode(on) {
   map.setMode(on ? 'play' : 'orbit');
@@ -1312,6 +1559,7 @@ function init() {
   loadPrefs();
   map = new Map3D($('map'), { onPick: onMapPick, onHover: onMapHover, onPlay: onMapPlay, radiusPx: () => G.spreadPx });
   bindMapBar();
+  bindTake();
   $('btnHelp').addEventListener('click', () => $('dlgHelp').showModal());
   $('helpClose').addEventListener('click', () => $('dlgHelp').close());
   $('btnUp').addEventListener('click', () => showLib(dirName(libPath).length < LIB.length ? LIB : dirName(libPath)));
@@ -1355,6 +1603,7 @@ function init() {
       return;
     }
     if (!mod && (e.key === 'p' || e.key === 'P')) { setPlayMode(map.mode !== 'play'); return; }
+    if (!mod && (e.key === 'r' || e.key === 'R')) { if (REC.on) stopRec(); else startRec(); return; }
     if (e.key === '?') { $('dlgHelp').showModal(); return; }
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();

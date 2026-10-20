@@ -98,22 +98,49 @@ int ingest_scan_folders(corpus_folder_t *out, int max) {
     return n;
 }
 
-/* Recurse a folder (bounded depth) collecting audio files into paths[]. Depth cap
- * bounds symlink loops; the file cap (`max`) bounds total. Subfolders first, then
- * files, so nested sample libraries are picked up (a whole tree as one corpus). */
-static void scan_audio(const char *dir, char (*paths)[INGEST_PATH], int max, int *n, int depth) {
-    if (*n >= max || depth > 8) return;
+/* Folder entries in name (byte) order: corpus order is then the same on every
+ * device and in the Corpus Builder, which matters for k-means seeds (pad clusters)
+ * and pool decimation. readdir order is the filesystem's hash order. */
+static int cmp_name(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+static int sorted_entries(const char *dir, char ***out) {
+    *out = NULL;
     DIR *d = opendir(dir);
-    if (!d) return;
+    if (!d) return 0;
+    int n = 0, cap = 0;
+    char **v = NULL;
     struct dirent *e;
-    while ((e = readdir(d)) && *n < max) {
+    while ((e = readdir(d))) {
         if (e->d_name[0] == '.') continue;
-        char full[INGEST_PATH];
-        snprintf(full, sizeof(full), "%s/%s", dir, e->d_name);
-        if (is_dir_entry(dir, e))       scan_audio(full, paths, max, n, depth + 1);
-        else if (is_audio(e->d_name)) { snprintf(paths[*n], INGEST_PATH, "%s", full); (*n)++; }
+        if (n == cap) {
+            int nc = cap ? cap * 2 : 64;
+            char **nv = (char **)realloc(v, sizeof(char *) * (size_t)nc);
+            if (!nv) break;
+            v = nv; cap = nc;
+        }
+        if (!(v[n] = strdup(e->d_name))) break;
+        n++;
     }
     closedir(d);
+    if (n > 1) qsort(v, (size_t)n, sizeof(char *), cmp_name);
+    *out = v;
+    return n;
+}
+static void free_entries(char **v, int n) { for (int i = 0; i < n; i++) free(v[i]); free(v); }
+static int is_dir_path(const char *p) { struct stat st; return stat(p, &st) == 0 && S_ISDIR(st.st_mode); }
+
+/* Recurse a folder (bounded depth) collecting audio files into paths[], entries in
+ * name order (a subfolder's files come where the subfolder's name sorts). Depth cap
+ * bounds symlink loops; the file cap (`max`) bounds total. */
+static void scan_audio(const char *dir, char (*paths)[INGEST_PATH], int max, int *n, int depth) {
+    if (*n >= max || depth > 8) return;
+    char **ent; int ne = sorted_entries(dir, &ent);
+    for (int i = 0; i < ne && *n < max; i++) {
+        char full[INGEST_PATH];
+        snprintf(full, sizeof(full), "%s/%s", dir, ent[i]);
+        if (is_dir_path(full))          scan_audio(full, paths, max, n, depth + 1);
+        else if (is_audio(ent[i])) { snprintf(paths[*n], INGEST_PATH, "%s", full); (*n)++; }
+    }
+    free_entries(ent, ne);
 }
 
 int ingest_list_audio(const char *dir, char (*paths)[INGEST_PATH], int max) {
@@ -128,15 +155,15 @@ int ingest_list_audio_ex(const char *dir, char (*paths)[INGEST_PATH], int max, i
     }
     int n = 0;
     if (recurse) { scan_audio(dir, paths, max, &n, 0); return n; }
-    DIR *d = opendir(dir);                            /* top level only */
-    if (!d) return 0;
-    struct dirent *e;
-    while ((e = readdir(d)) && n < max) {
-        if (e->d_name[0] == '.' || !is_audio(e->d_name) || is_dir_entry(dir, e)) continue;
-        snprintf(paths[n], INGEST_PATH, "%s/%s", dir, e->d_name);
+    char **ent; int ne = sorted_entries(dir, &ent);  /* top level only */
+    for (int i = 0; i < ne && n < max; i++) {
+        char full[INGEST_PATH];
+        snprintf(full, sizeof(full), "%s/%s", dir, ent[i]);
+        if (!is_audio(ent[i]) || is_dir_path(full)) continue;
+        snprintf(paths[n], INGEST_PATH, "%s", full);
         n++;
     }
-    closedir(d);
+    free_entries(ent, ne);
     return n;
 }
 
