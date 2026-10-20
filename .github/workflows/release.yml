@@ -38,10 +38,13 @@ jobs:
           VERSION="${GITHUB_REF#refs/tags/v}"
           REPO="${{ github.repository }}"
           URL="https://github.com/$REPO/releases/download/v$VERSION/concat-module.tar.gz"
-          echo "{\"version\": \"$VERSION\", \"download_url\": \"$URL\"}" > release.json
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -f main
+          # A tag build has no local main: fetch it, switch, THEN write release.json
+          # (a forced checkout after writing would throw the new file away).
+          git fetch origin main
+          git checkout -B main origin/main
+          echo "{\"version\": \"$VERSION\", \"download_url\": \"$URL\"}" > release.json
           git add release.json
           git commit -m "chore: update release.json for v$VERSION [skip ci]"
           git push origin main
